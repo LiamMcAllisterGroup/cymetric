@@ -561,3 +561,46 @@ equality between the chunked and unchunked pullback precompute. Chunking
 changes the reduction order, so on a GPU float32 differs by about 5e-7 on
 entries of order 1. It now compares against a precision-appropriate relative
 tolerance. Equality held on the CPU, which is why it was written as `== 0`.
+
+## Against the upstream baseline, same card (RTX 5090)
+
+Measured with the harness from branch `bench-baseline`, run from inside this
+worktree so it resolves this tree (`bench.py` puts its own root on
+`sys.path[0]`, so running it from the benchmark worktree measures *that* copy --
+which is why the earlier attempt reported 0/3).
+
+| case | upstream | patched | change |
+|---|---|---|---|
+| step, quintic bs64 | 0.91 ms | 1.06 ms | 0.86x |
+| step, quintic bs1024 | 1.10 ms | 0.87 ms | 1.27x |
+| step, quintic bs10000 | 3.97 ms | 3.77 ms | 1.05x |
+| step, bicubic bs1024 | 0.78 ms | 0.91 ms | 0.86x |
+| step, tetraquadric bs1024 | 0.98 ms | 1.12 ms | 0.88x |
+| **`train_model`, quintic** | 5.36 s | 4.35 s | **1.23x** |
+| **`train_model`, tetraquadric** | 6.03 s | 5.01 s | **1.20x** |
+| det g, quintic | 1.38 ms | 1.71 ms | 0.81x |
+| det g, tetraquadric | 2.44 ms | 1.39 ms | 1.76x |
+| **step, toric h11 = 1** | **blocked** | 1.10 ms | unblocked |
+| **step, toric h11 = 5** | **blocked** | 1.03 ms | unblocked |
+| **step, toric h11 = 10** | **blocked** | 1.22 ms | unblocked |
+
+Read honestly:
+
+- **The headline is the last three rows.** Upstream cannot construct a JAX toric
+  model at all; these now train, at 200, 203 and 263 MB peak device memory.
+- **End to end is 1.20-1.23x faster**, which is the host-side gather change.
+  That is the number that matters, because an epoch is host-bound: on this same
+  harness a 4x faster GPU bought only 1.04-1.14x.
+- **The single-step cases wobble by +-15% in both directions and should not be
+  read as either a win or a regression.** The harness's own notes put the
+  batch-64 case at +-25% within a run and absolute step times moving by a third
+  between runs of the same script; bs1024 is small enough to be host-latency
+  bound too. The one solid step result is bs10000 (1.05x, tight spread), and the
+  one solid det g result is the tetraquadric (1.76x, the wide-input case the
+  low-rank route was built for).
+- det g on the quintic at 0.81x is within that same noise band, and the
+  route chooser deliberately keeps the narrow CICY path on the full Hessian.
+
+To reproduce: copy `benchmarks/` from `bench-baseline` into this worktree and
+run `CUDA_VISIBLE_DEVICES=0 python benchmarks/bench.py --groups
+train_jax_toric,train_jax,train_model_jax,detg_jax`.
