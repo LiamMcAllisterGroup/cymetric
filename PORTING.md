@@ -6,8 +6,9 @@ group.  Donor (read-only reference): `/home/nate/github/extensionmetric`,
 whose `docs/optimization_summary.md` rows are cited below as "donor row N".
 
 Everything here is in `cymetric/jax`; the TF, torch, pointgen and sage code is
-untouched.  API compatibility with upstream was not a constraint, and two
-signatures did change (noted under "Things a reviewer should check").
+untouched.  API compatibility with upstream was not a constraint and a few
+signatures did change, all listed under "Things a reviewer should check by
+hand" at the end.
 
 ## Test fixtures
 
@@ -40,7 +41,8 @@ donor calls "off by two".  The two CICY ones come from cymetric's own
 `PointGenerator`.  No SageMath, Mathematica or cytools is needed to run the
 tests.
 
-Run the suite with
+98 cases pass with the float32 tolerances and 97 (plus the float32-only
+underflow test, skipped) under x64.  Run the suite with
 
     PYTHONPATH=<worktree> JAX_PLATFORMS=cpu pytest tests/ -q          # float32
     PYTHONPATH=<worktree> JAX_ENABLE_X64=1 JAX_PLATFORMS=cpu pytest tests/ -q
@@ -109,7 +111,7 @@ auxiliary-weight code paths that read `point_gen.ambient` for every toric
 user, and the JAX fix above makes the toric models independent of AMBIENT
 anyway.  It is recorded here as an upstream data-side wart, not fixed.
 
-Tests: `tests/test_jax_toric_model.py` (17 cases over the three toric
+Tests: `tests/test_jax_toric_model.py` (40 cases over the four toric
 fixtures).  The one that matters most is
 `test_fs_metric_transitions_between_toric_patches`: with a zero network the
 model's metric is exactly the toric Fubini-Study metric, which is a genuine
@@ -280,18 +282,24 @@ it numerically, in both the matrix and the flat branch.
 Measured on an RTX 5090, quintic, 20 000 points, batch 64 (the benchmarking
 agent found the same thing on a 5060 Ti and it is the larger end-to-end win):
 
-| per step | ms |
-|---|---|
-| `train_step` on a batch already on the device | 0.901 |
-| plus the per-batch numpy fancy-index gather `train_model` did | 2.516 |
-| plus one device-side shuffle per phase, then contiguous slices | 0.948 |
+| per step | run A, ms | run B, ms |
+|---|---|---|
+| `train_step` on a batch already on the device | 0.901 | 1.220 |
+| plus the per-batch numpy fancy-index gather `train_model` did | 2.516 | 2.593 |
+| plus one device-side shuffle per phase, then contiguous slices | 0.948 | 1.181 |
+
+(Two runs of the same script; the absolute step time moves by a third between
+them, so the quantity to read is the within-run difference: the gather adds
+1.37-1.62 ms, the shuffle-and-slice adds 0.00-0.05 ms.)
 
 The gather copied a numpy index array to the device and launched a gather for
-each of X, y and the pullbacks, 313 times an epoch, which was 64% of the step
-time.  `train_model` now permutes once per phase (same
+each of X, y and the pullbacks, 313 times an epoch, which was more than half
+the step time.  `train_model` now permutes once per phase (same
 `np.random.permutation` draw, so a seeded run is reproducible and the batches
-are the same points in the same groups) and slices.  That is 2.7x off the
-step at batch 64, and the smaller the batch the larger the share.
+are the same points in the same groups) and slices.  That is 2.2x off the
+step at batch 64, and the smaller the batch the larger the share.  End to
+end, 4 epochs of the quintic at 20 000 points now take 3.2 s including the
+compile, i.e. 0.80 s per epoch, of which 0.37 s is the 313 steps themselves.
 
 The same function also precomputes the training set's pullbacks in chunks
 (`pullback_chunk=4096`): one program over the whole set holds a
@@ -355,6 +363,34 @@ double sum on every toric fixture (9e-8 float32, 5e-16 x64).
   program for the tail.  That is one extra compile per run, not per call, so
   it was not worth the padding and masking.
 
+## Cross-check against the benchmark harness's geometries
+
+`/home/nate/github/cymetric-bench` has three JAX toric cases (h11 = 1, 5, 10)
+that its baseline records as blocked, on toric data of its own and with the
+other AMBIENT convention -- a partition of ncoords, so for it the projective
+transition count comes out too *small* (4 against the fan's 12 at h11 = 5),
+where the fixtures here carry upstream's section counts and it comes out far
+too large.  Both directions are the same bug and both are fixed.
+
+Running that harness with `PYTHONPATH` pointed here does not test this tree:
+`bench.py` and `cases.py` each insert their own repo root at the front of
+`sys.path`, so the run reports its own copy of the library (its output names
+the file it resolved).  Driving the same three geometries directly -- their data files and their
+basis construction, this library, in a 70-line script kept outside the repo
+at `/home/nate/.cache/tmp/claude-1000/-home-nate-github-extensionmetric/a9730421-6ade-43cb-87cd-27511d216fe1/scratchpad/investigate/cross_check.py`
+-- gives, on an RTX 5090 at batch 512:
+
+| geometry | ncoords | nTransitions | route | step |
+|---|---|---|---|---|
+| h11 = 1 | 5 | 4 | full | 1.14 ms |
+| h11 = 5 | 9 | 12 | vmap | 1.14 ms |
+| h11 = 10 | 14 | 16 | vmap | 1.35 ms |
+
+with a finite metric and a positive determinant at every point in each case.
+Before: `TypeError: Field 'patch_degrees' was not initialized` at h11 = 1 and
+`ValueError: shape mismatch: value array of shape (12,12) could not be
+broadcast to indexing result of shape (12,4)` at h11 = 5 and 10.
+
 ## Guidance for the high-h11 workload (not code changes)
 
 * `helper.train_model`'s default `batch_sizes=(64, 10000)` sets the memory
@@ -369,6 +405,53 @@ double sum on every toric fixture (9e-8 float32, 5e-16 x64).
 * The toric patch-transition loss needs a fan whose charts are all smooth
   (see item 1).  `PhiFSModelToric`'s default random-scaling transition loss
   has no such restriction.
+
+## Things a reviewer should check by hand
+
+Signature and attribute changes (upstream compatibility was not a
+constraint, but these are what a downstream script would notice):
+
+* `FreeModel.kappa` is a 0-d JAX array rather than a Python float.
+  `float(model.kappa)` and arithmetic still work; an `isinstance(..., float)`
+  or a dict key would not.
+* `FreeModel.sigma_loss` is a method `(y_true, y_pred, flat=False)` instead
+  of a property returning a closure.  `model.sigma_loss(y, g)` is unchanged,
+  and the bound method can still be passed around; `sigma_loss(kappa, nfold)`
+  in `losses.py` is untouched for anyone who built the closure themselves.
+* `FreeModel.__init__` gained `hessian_route=None`, `train_model` gained
+  `pullback_chunk=4096`, `sigma_measure` gained `chunk=None`.
+* `ToricModel._mask_to_patch_index` returns an `(n_p,)` int32 array of patch
+  indices instead of a tuple of arrays from `jnp.where`.
+
+Judgement calls worth a second opinion:
+
+* **The transition-loss normalisation.** The toric patch table pads unused
+  slots with "transition to the same patch", which contributes nothing, and
+  the loss divides by `nTransitions` regardless.  So a coordinate that is
+  free in fewer patches than the maximum has its transition loss scaled
+  down.  That is upstream's behaviour in all three backends and this branch
+  preserves it, but it is arguably wrong, and it is why the projective count
+  changed the loss value by exactly the ratio of the counts.
+* **The same-patch substitution** in `ToricModel.get_transition_matrix`:
+  rows that stay in their patch get their coordinates replaced by ones
+  before the transition monomial is evaluated, and the identity is written
+  over the result.  The values are right (the test on the FS metric covers
+  it) and it avoids an inf in a discarded branch, but it is a behaviour
+  change relative to the old index-select version for any row whose
+  exponents are negative and whose coordinate vanishes.
+* **The route thresholds** (16 real inputs, 4096 feature values) come from
+  measurements on one GPU with one network shape.  They change speed, never
+  results, and `hessian_route=` overrides them.
+* **The fixtures** in `tests/data` were generated with `cytools` + the
+  donor's `cypoints` in the `cypoints` conda env and then pushed through
+  cymetric's own `ToricPointGeneratorMC`/`prepare_basis_pickle`; the
+  generator script is in this session's scratchpad, not the repo, so the
+  pickles are the record.  Their points satisfy the hypersurface to a
+  relative 1e-9, which is the floor of the exact transition tests.
+* **`det_g_chunked`** compiles a second program for a ragged last chunk (one
+  extra compile per run, not per call).  Padding would avoid it.
+* The `h11_10` transition residual and the orbifold-chart warnings are
+  upstream numpy-side defects left in place; see item 1.
 
 ## Measured: before and after
 
