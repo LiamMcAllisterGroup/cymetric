@@ -1,80 +1,59 @@
-# Pallas (Triton backend) bug report: a loaded tile reused from a Python variable is miscomputed
+# The Pallas/Triton "bug" was not a bug
 
-Status 2026-10-20: **still reproduces on jax 0.12.0**, two minor versions after it was
-found on 0.10.2. Reproduced on two GPUs, isolated to a self-contained script, workaround
-found. **Not yet filed upstream** -- it should be; the reproducer is
-`benchmarks/pallas_bug_repro.py` here and needs nothing but jax.
+**Retracted 2026-10-20.** A private repository carried a report of a Pallas
+(Triton backend) miscompilation: a tile loaded from a ref into a Python
+variable and used twice was said to be computed wrongly, by O(1), on two GPUs
+and across jax 0.10.2 and 0.12.0. It was never filed upstream. It should not
+be: the reproducer was wrong, and Pallas is correct.
 
-Confirmation run, jax 0.12.0, RTX 5060 Ti (`dW` is the quantity that goes wrong):
+## What the reproducer actually did
 
-    NT=6 share=True  rowsum=True  preload=True : dW 5.6e-01
-    NT=6 share=True  rowsum=True  preload=False: dW 5.6e-01
-    NT=6 share=True  rowsum=False preload=True : dW 5.6e-01
-    NT=6 share=False rowsum=True  preload=True : dW 2.4e-07
-    NT=6 share=False rowsum=False preload=False: dW 2.4e-07
-
-i.e. sharing the loaded tile is wrong by O(1) and not sharing it is correct to float32
-rounding, independently of the other two switches.
-
-## Environment
-
-- jax 0.10.2, jaxlib 0.10.2 (CUDA 12 wheels), Python 3.14, Linux 7.0.0
-- NVIDIA driver 595.84; RTX 5090 (device 0) and RTX 5060 Ti (device 1): both reproduce
-- Pallas GPU with `compiler_params=jax.experimental.pallas.triton.CompilerParams(num_warps=8)`
-  (the default Mosaic-GPU backend has no `dot` lowering in this version)
-
-## Reproducer
-
-`benchmarks/fused_fwdrev/pallas_bug_repro.py` (self-contained, no project imports; the ladder of variants it was reduced through, `pallas_bug_repro2.py` to `repro9.py`, is in git at tag `state-S26`). Kernel
-over blocks of R = 8 rows, tiles of width 128, NT = 6 channels:
+The failing branch built its list of outputs like this:
 
 ```python
-s1, s2 = s1_ref[...], s2_ref[...]
-ca = ca0_ref[...] + s1 * cz_ref[...]
-c_dz = [cdz_ref[:, k, :] for k in range(NT)]                 # load each tile once ...
-for k in range(NT):
-    ca = ca + s2 * da_ref[:, k, :] * c_dz[k]                  # ... use it here
-cda = [cda0_ref[:, k, :] + s1 * c_dz[k] for k in range(NT)]  # ... and here
-dW = plt.dot(zp_ref[...], ca, trans_a=True)
-for k in range(NT):
-    dW = dW + plt.dot(dzp_ref[:, k, :], cda[k], trans_a=True)
-dw_ref[...] = dW                      # (None, 128, 128) per-block output
-db_ref[...] = jnp.sum(ca, axis=0)     # (None, 128) per-block output
-ca_ref[...] = ca                      # (R, 128) output, for checking
-for k in range(NT): cda_ref[:, k, :] = cda[k]
+c_dz = [cdz_ref[:, k, :] for k in range(nt)]
+for k in range(nt):
+    ca = ca + s2 * da_ref[:, k, :] * c_dz[k]
+cda = [cda0_ref[:, k, :] + s1 * e for e in c_dz]      # <-- k is stale
 ```
 
-Observed (relative max error against the same arithmetic in plain jnp):
+In that last line `k` is not the comprehension variable. It is the loop
+variable left over from the `for` loop above, frozen at `nt - 1`, so every one
+of the `nt` entries of `cda` was built from slice `nt - 1` of `cda0_ref`. The
+branch it was being compared against wrote its own `for k in range(nt)` and
+was correct:
 
-| variant | ca | cda | dW |
-|---|---|---|---|
-| tile held in `c_dz` and reused (above) | 9e-8 | **0.56** | **0.56** |
-| same, `cdz_ref[:, k, :]` re-indexed at each use | 9e-8 | 0 | 2e-7 |
+```python
+cda = [cda0_ref[:, k, :] + s1 * cdz_ref[:, k, :] for k in range(nt)]
+```
 
-`ca`, which is built from the same shared tiles, is correct; `cda` is wrong, and so is
-anything computed from it. The failure does not depend on: the `db` output being written or
-zero-filled, whether the extra output is `(None, 128)`, `(1, 128)` or `(R, 128)`
-(`pallas_bug_repro9.py`), the operands of the dots being pre-loaded, NT (1, 2 and 6 fail),
-`num_warps`, or the block size R (8, 16, 32 all fail in the full kernel).
+So the two branches never computed the same function, and the O(1) discrepancy
+was the reproducer's own Python scoping error.
 
-The failure does depend on the kernel having the additional output(s): the same body with
-only `dW` and `ca` as outputs, or without the dots, is correct (`pallas_bug_repro3.py`,
-`pallas_bug_repro8.py`). So the minimal trigger observed is: a loaded tile reused from a
-Python variable in two elementwise expressions, one of whose results feeds a `trans_a` dot,
-in a kernel with a third output.
+## The check
 
-## How it was found
+`benchmarks/pallas_shared_tile_check.py` is the original script with that one
+line corrected to `enumerate(c_dz)`. Every variant now agrees with the
+reference to float32 rounding, with the elementwise output exact:
 
-The hand-written adjoint of a small MLP's forward-over-reverse Hessian
-(`src/extensionbundle/fused_fwdrev.py`) gave wrong weight gradients for the lower layers
-while every intermediate written out of the kernel was right. Bisection from the failing
-kernel body down (`pallas_bug_repro2.py` ... `repro9.py`) removed one ingredient at a time;
-building up from a minimal kernel (`repro1`, `repro3`-`repro6`) never reproduced it,
-because each of those variants happened to lack one of the three ingredients.
+    NT=6 share=True  rowsum=True  preload=True : dW 2.4e-07  ca 8.7e-08  cda 0.0e+00
+    NT=6 share=True  rowsum=True  preload=False: dW 2.4e-07  ca 8.7e-08  cda 0.0e+00
+    NT=6 share=True  rowsum=False preload=True : dW 2.4e-07  ca 8.7e-08  cda 0.0e+00
+    NT=6 share=False rowsum=True  preload=True : dW 2.4e-07  ca 8.7e-08  cda 0.0e+00
+    NT=6 share=False rowsum=False preload=False: dW 2.4e-07  ca 8.7e-08  cda 0.0e+00
 
-## Workaround
+jax 0.12.0, RTX 5060 Ti. The script is kept as a regression check, not as a bug
+report: **loading a tile once and reusing it from a Python variable is sound**,
+which is the pattern a fused kernel wants.
 
-Re-index the ref at every use instead of keeping the loaded tile in a variable. Applied in
-`_up_adj_layer_kernel`; the layered adjoint then agrees with the reference to 8e-5 (float32).
-The monolithic three-layer kernel cannot use this fix because its reused tiles are dot
-results rather than loads, and stays wrong.
+## Why this matters beyond the retraction
+
+Work in the donor repository was routed around this supposed defect -- see the
+row about the fused forward-over-reverse kernel in that project's optimisation
+log, which records a workaround. Any design choice made to avoid reusing a
+loaded tile rests on nothing and is worth revisiting.
+
+The general lesson is the duller one: when two code paths disagree, rule out
+the harness before blaming the compiler. Minimising the reproducer is what
+exposed this, after two GPUs and two jax versions had been taken as
+corroboration.

@@ -11,7 +11,7 @@ def build(nt, share, rowsum, preload):
         if share:
             c_dz = [cdz_ref[:, k, :] for k in range(nt)]
             for k in range(nt): ca = ca + s2 * da_ref[:, k, :] * c_dz[k]
-            cda = [cda0_ref[:, k, :] + s1 * e for e in c_dz]
+            cda = [cda0_ref[:, kk, :] + s1 * e for kk, e in enumerate(c_dz)]
         else:
             for k in range(nt): ca = ca + s2 * da_ref[:, k, :] * cdz_ref[:, k, :]
             cda = [cda0_ref[:, k, :] + s1 * cdz_ref[:, k, :] for k in range(nt)]
