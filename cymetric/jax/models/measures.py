@@ -4,12 +4,61 @@ Various error measures for JAX neural networks representing (Ricci-flat) Kähler
 Faithful translation of tensorflow/models/measures.py.
 Uses jax.grad / jax.vmap / jax.jacobian instead of tf.GradientTape.
 """
+import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from cymetric.jax.models.dtypes import complex_dtype, real_dtype
 
 
-def sigma_measure(model, points, y_true):
+@eqx.filter_jit
+def _det_g_one_chunk(model, points):
+    r"""``Re det g`` of one chunk of points, in a single jitted program."""
+    return jnp.real(jnp.linalg.det(model(points)))
+
+
+def _n_features(model):
+    r"""Width of the first layer's output of the NN backbone, or None.
+
+    The input map of a toric phi net is what makes the metric expensive: the
+    nets of the McAllister scan take all pairwise section products, 87k real
+    numbers per point at h11 = 16.  Knowing that width lets
+    :func:`det_g_chunked` pick a batch that fits.
+    """
+    from cymetric.jax.models.models import input_map_width
+    return input_map_width(getattr(model, 'model', None), 2 * model.ncoords)
+
+
+def det_g_chunked(model, points, chunk=None, budget=3e8):
+    r"""``Re det g`` on ``points``, one jitted chunk at a time.
+
+    ``model(points)`` holds, per point, the intermediates of ``2*nfold``
+    Hessian-vector products through the network's input map.  Asking for a
+    whole validation set at once is what put the toric models of the
+    McAllister scan at 36-61 GB (and an OOM at h11 = 16, 17); chunking makes
+    the peak independent of the number of points.
+
+    Args:
+        model: Any FSModel subclass (JAX/equinox version).
+        points (jnp.ndarray, [n_p, 2*ncoord], float): NN input.
+        chunk (int, optional): Points per program.  None sizes it from the
+            width of the network's input map, between 128 and 4096.
+        budget (float): Target number of real intermediates per chunk used by
+            that heuristic.  Defaults to 3e8 (~1 GB in float32).
+
+    Returns:
+        jnp.ndarray, [n_p], real: det g at every point.
+    """
+    points = jnp.asarray(points)
+    if chunk is None:
+        n_feat = _n_features(model) or 2 * model.ncoords
+        chunk = int(max(128, min(4096,
+                                 budget // (2 * model.nfold * 4 * max(n_feat, 1)))))
+    return jnp.concatenate([_det_g_one_chunk(model, points[i:i + chunk])
+                            for i in range(0, points.shape[0], chunk)])
+
+
+def sigma_measure(model, points, y_true, chunk=None):
     r"""Monge-Ampere (sigma) measure.
 
     .. math::
@@ -25,14 +74,15 @@ def sigma_measure(model, points, y_true):
         model: Any FSModel subclass (JAX/equinox version).
         points (jnp.ndarray, [n_p, 2*ncoord], float32): NN input.
         y_true (jnp.ndarray, [n_p, 2], float32): (weights, |Omega|^2).
+        chunk (int, optional): Points per jitted ``det g`` program; see
+            :func:`det_g_chunked`.  None lets that function choose.
 
     Returns:
         float: sigma measure.
     """
-    g = model(points)
     weights = y_true[:, -2]
     omega = y_true[:, -1]
-    det = jnp.real(jnp.linalg.det(g))
+    det = det_g_chunked(model, points, chunk=chunk)
     det_over_omega = det / omega
     volume_cy = jnp.mean(weights)
     vol_k = jnp.mean(det_over_omega * weights)

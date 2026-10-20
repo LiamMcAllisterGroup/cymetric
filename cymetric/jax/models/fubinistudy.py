@@ -65,6 +65,14 @@ class FSModel(eqx.Module):
                     new_basis[key] = jnp.array(BASIS[key], dtype=BASIS[key].dtype)
                 else:
                     new_basis[key] = jnp.array(BASIS[key], dtype=cdtype)
+            elif isinstance(BASIS[key], (int, float, complex)) \
+                    and not isinstance(BASIS[key], bool):
+                # Plain Python scalars (KAPPA, NFOLD, NHYPER as written by
+                # nphelper.prepare_basis_pickle) become arrays as well.  As
+                # floats they are static under eqx.filter_jit, so a second
+                # moduli point of the same geometry -- same shapes, different
+                # KAPPA -- recompiled every program that takes the model.
+                new_basis[key] = jnp.array(BASIS[key], dtype=cdtype)
             else:
                 new_basis[key] = BASIS[key]
         self.BASIS = new_basis
@@ -91,6 +99,25 @@ class FSModel(eqx.Module):
         # ---------- helpers generated at init time ----------
         self.lc = jnp.array(
             get_levicivita_tensor(self.nfold), dtype=complex_dtype())
+        # Subclasses override _generate_helpers (toric hypersurfaces need a
+        # different patch/transition structure), exactly as the TF and torch
+        # backends do.  Calling it here instead of inlining the projective
+        # version is what makes ToricModel._generate_helpers reachable.
+        self._generate_helpers()
+        self.slopes = self._target_slopes()
+
+    # ------------------------------------------------------------------
+    # Initialisation helpers (run once, results stored as attributes)
+    # ------------------------------------------------------------------
+
+    def _generate_helpers(self):
+        r"""Assigns the projection and patch-transition helper fields.
+
+        Equivalent to FSModel._generate_helpers in the TF and torch backends.
+        Overridden by :class:`cymetric.jax.models.models.ToricModel`, whose
+        patches come from the fan rather than from a product of projective
+        spaces.
+        """
         self.proj_matrix = self._generate_proj_matrix()
         self._proj_indices = self._generate_proj_indices()
         self.nTransitions = self._patch_transitions()
@@ -104,11 +131,6 @@ class FSModel(eqx.Module):
             # so no data-dependent shapes/control-flow occur under jit.
             self.fixed_patches, self.fixed_patches_n = \
                 self._generate_patches_table()
-        self.slopes = self._target_slopes()
-
-    # ------------------------------------------------------------------
-    # Initialisation helpers (run once, results stored as attributes)
-    # ------------------------------------------------------------------
 
     def _generate_proj_matrix(self):
         r"""Creates proj_matrix storing ambient-space projection info

@@ -18,7 +18,7 @@ import equinox as eqx
 import numpy as np
 from functools import partial
 
-from .losses import sigma_loss
+from .losses import sigma_integrand
 from .fubinistudy import FSModel
 from cymetric.pointgen.nphelper import (
     get_all_patch_degrees, compute_all_w_of_x, get_levicivita_tensor,
@@ -55,6 +55,138 @@ def _to_hermitian(x, nfold):
 
 
 # ---------------------------------------------------------------------------
+# ddbar phi, pulled back: the low-rank route and the full-Hessian reference
+# ---------------------------------------------------------------------------
+
+def _real_tangents(J):
+    r"""The 2*nfold real directions of one point from its pullback.
+
+    Rows ``[Re J_a, Im J_a]`` and ``[Im J_a, -Re J_a]``, so that
+    ``S = T Hess(phi) T^T`` holds the real and imaginary parts of
+    ``J (del delbar phi) J^H`` (see :func:`ddbar_phi_pullback`).
+
+    Args:
+        J (jnp.ndarray, [nfold, ncoords], complex): Pullback at one point.
+
+    Returns:
+        jnp.ndarray, [2*nfold, 2*ncoords], real.
+    """
+    return jnp.concatenate(
+        [jnp.concatenate([jnp.real(J), jnp.imag(J)], axis=1),
+         jnp.concatenate([jnp.imag(J), -jnp.real(J)], axis=1)], axis=0)
+
+
+# Above this many values out of the network's input map, the 2*nfold
+# Hessian-vector products of ddbar phi are mapped rather than vmapped: each
+# one carries a copy of those intermediates.  Below it the six products are
+# small and six kernel launches cost more than the memory saves.
+TANGENT_MAP_THRESHOLD = 4096
+
+
+def input_map_width(nn_model, n_in):
+    r"""Number of values the backbone's first layer makes of one point.
+
+    For a plain MLP that is the hidden width; for a net whose first layer is
+    an input map (the toric nets of the McAllister scan start with all
+    pairwise section products) it is the width of that map, which is what
+    decides whether ``ddbar phi`` should map or vmap its tangents and how
+    many points fit in a ``det g`` program.
+
+    Args:
+        nn_model (eqx.Module): The network backbone.
+        n_in (int): Number of real inputs per point (``2 * ncoords``).
+
+    Returns:
+        int or None: None when the backbone is not a layer sequence.
+    """
+    layers = getattr(nn_model, 'layers', None)
+    if not layers:
+        return None
+    try:
+        x0 = jnp.zeros(n_in, dtype=real_dtype())
+        return int(np.prod(jax.eval_shape(layers[0], x0).shape))
+    except Exception:
+        return None
+
+
+def ddbar_phi_pullback(phi_fn, points, pullbacks, sequential=True):
+    r"""Pulled back ``del delbar phi`` without ever forming the full Hessian.
+
+    ``(del delbar phi)_pb = J (del delbar phi) J^H`` only ever contracts the
+    Hessian of phi with the ``nfold`` rows of the pullback on either side, so
+    the ``2*ncoords`` squared second derivatives of
+    :func:`ddbar_phi_pullback_full` are ``2*nfold`` directional ones (six for
+    a threefold), each a forward-over-reverse Hessian-vector product.  With
+
+    .. math::
+
+        T = \begin{pmatrix} \Re J & \Im J \\ \Im J & -\Re J\end{pmatrix},
+        \qquad S = T\,\mathrm{Hess}(\phi)\,T^T
+
+    one has
+    ``J (del delbar phi) J^H = [(S_RR + S_II) + i (S_IR - S_RI)] / 4``.
+    Exact, not an approximation: it agrees with the full Hessian route to
+    float32 rounding (see ``tests/test_jax_metric_routes.py``).
+
+    Args:
+        phi_fn (callable): scalar phi of a single point, (2*ncoords,) -> ().
+        points (jnp.ndarray, [bSize, 2*ncoords], real): Points.
+        pullbacks (jnp.ndarray, [bSize, nfold, ncoords], complex): Pullbacks.
+        sequential (bool): If True (default) the ``2*nfold`` Hessian-vector
+            products run in a ``lax.map`` rather than a ``vmap``.  Each one
+            carries the intermediates of phi's input map, which for toric
+            models are all pairwise section products (87k values per point at
+            h11 = 16), so mapping keeps one copy instead of ``2*nfold``.
+
+    Returns:
+        jnp.ndarray, [bSize, nfold, nfold], complex.
+    """
+    nfold = pullbacks.shape[1]
+    cdtype = complex_dtype()
+
+    def single(x, J):
+        T = _real_tangents(J).astype(x.dtype)
+        grad_phi = jax.grad(phi_fn)
+        hvp = lambda t: jax.jvp(grad_phi, (x,), (t,))[1]
+        HT = jax.lax.map(hvp, T) if sequential else jax.vmap(hvp)(T)
+        S = T @ HT.T
+        dd = ((S[:nfold, :nfold] + S[nfold:, nfold:])
+              + 1j * (S[nfold:, :nfold] - S[:nfold, nfold:]))
+        return (0.25 * dd).astype(cdtype)
+
+    return jax.vmap(single)(points, pullbacks)
+
+
+def ddbar_phi_pullback_full(phi_fn, points, pullbacks):
+    r"""Pulled back ``del delbar phi`` through the full Hessian of phi.
+
+    The reference route (what the JAX models did everywhere before): a
+    ``(2*ncoords, 2*ncoords)`` Hessian per point, contracted with the
+    pullbacks afterwards.  Kept for the agreement tests of
+    :func:`ddbar_phi_pullback`.
+
+    Args:
+        phi_fn (callable): scalar phi of a single point, (2*ncoords,) -> ().
+        points (jnp.ndarray, [bSize, 2*ncoords], real): Points.
+        pullbacks (jnp.ndarray, [bSize, nfold, ncoords], complex): Pullbacks.
+
+    Returns:
+        jnp.ndarray, [bSize, nfold, nfold], complex.
+    """
+    ncoords = pullbacks.shape[-1]
+    dd_phi = jax.vmap(jax.jacobian(jax.grad(phi_fn)))(points)
+    nc = ncoords
+    dx_dx_phi = 0.25 * dd_phi[:, :nc, :nc]
+    dx_dy_phi = 0.25 * dd_phi[:, :nc, nc:]
+    dy_dx_phi = 0.25 * dd_phi[:, nc:, :nc]
+    dy_dy_phi = 0.25 * dd_phi[:, nc:, nc:]
+    dd_phi_c = (dx_dx_phi + dy_dy_phi
+                + 1j * (dx_dy_phi - dy_dx_phi)).astype(complex_dtype())
+    return jnp.einsum('xai,xij,xbj->xab', pullbacks, dd_phi_c,
+                      jnp.conj(pullbacks))
+
+
+# ---------------------------------------------------------------------------
 # FreeModel
 # ---------------------------------------------------------------------------
 
@@ -70,7 +202,8 @@ class FreeModel(FSModel):
     NOTE:
         * ``learn_ricci`` is False by default, matching TF.
         * Loss contributions are weighted by ``self.alpha``.
-        * ``self.sigma_loss`` is the MA loss function (closure).
+        * ``self.sigma_loss`` is the MA loss (a method, taking kappa from
+          the model's dynamic ``kappa`` field).
     """
     model: eqx.Module
     NLOSS: int
@@ -80,22 +213,33 @@ class FreeModel(FSModel):
     learn_ricci: bool
     learn_ricci_val: bool
     learn_volk: bool
-    kappa: float
+    # kappa is an array, not a Python float: it changes from one moduli point
+    # of a geometry to the next, and a float would make every jitted program
+    # that takes the model recompile when it does (measured: see PORTING.md).
+    kappa: jnp.ndarray
     gclipping: float
-    # sigma_loss closure is not a JAX array — store as a non-leaf attribute
-    # by wrapping in a list (equinox treats non-array containers as static)
-    _sigma_loss_fn: list   # [callable]
     custom_metrics: list   # [metric objects]
+    map_tangents: bool     # see TANGENT_MAP_THRESHOLD
 
-    def __init__(self, nn_model, BASIS, alpha=None, **kwargs):
+    def __init__(self, nn_model, BASIS, alpha=None, map_tangents=None, **kwargs):
         r"""
         Args:
             nn_model (eqx.Module): NN mapping (bSize, 2*ncoords) → (bSize, nfold²).
             BASIS (dict): Geometry dictionary from PointGenerator.
             alpha (list of float, optional): Loss weights. Defaults to all 1.
+            map_tangents (bool, optional): Whether the 2*nfold
+                Hessian-vector products of ``ddbar phi`` are scheduled one at
+                a time (see :func:`ddbar_phi_pullback`).  None decides from
+                the width of the network's input map, which is what the
+                memory peak is proportional to. Defaults to None.
         """
         super(FreeModel, self).__init__(BASIS=BASIS, **kwargs)
         self.model = nn_model
+        if map_tangents is None:
+            width = input_map_width(nn_model, 2 * self.ncoords)
+            map_tangents = bool(width is not None
+                                and width > TANGENT_MAP_THRESHOLD)
+        self.map_tangents = bool(map_tangents)
         self.NLOSS = 5
 
         if alpha is not None:
@@ -109,18 +253,24 @@ class FreeModel(FSModel):
         self.learn_ricci_val = False
         self.learn_volk = True
 
-        self.kappa = float(jnp.real(BASIS['KAPPA']))
+        self.kappa = jnp.asarray(jnp.real(BASIS['KAPPA']), dtype=real_dtype())
         self.gclipping = 5.0
-        self._sigma_loss_fn = [sigma_loss(self.kappa, float(self.nfold))]
         self.custom_metrics = []
 
     # ------------------------------------------------------------------
-    # sigma_loss property (stored as list to keep equinox happy)
+    # The MA (sigma) loss
     # ------------------------------------------------------------------
 
-    @property
-    def sigma_loss(self):
-        return self._sigma_loss_fn[0]
+    def sigma_loss(self, y_true, y_pred, flat=False):
+        r"""``|1 - det(g) / (|Omega|^2 kappa)|`` of this model's kappa.
+
+        Was a closure built in ``__init__`` (``sigma_loss(kappa, nfold)``)
+        and stored on the module.  Two models of the same geometry then had
+        different static parts -- a fresh function object each time -- so
+        every jitted program that takes the model recompiled per instance.
+        """
+        return sigma_integrand(y_true, y_pred, self.kappa,
+                               float(self.nfold), flat=flat)
 
     # ------------------------------------------------------------------
     # Forward pass (equivalent to FreeModel.call in TF)
@@ -355,39 +505,37 @@ class PhiFSModel(FreeModel):
         # Phi model is automatically Kähler
         self.learn_kaehler = False
 
+    def _phi(self, x_single):
+        """Scalar NN output for a single point.
+
+        x_single has shape (n_in,); equinox Linear layers expect 1-D input,
+        so we call self.model directly without adding a batch dimension.
+        """
+        return self.model(x_single)[0]   # scalar: output shape (1,) -> ()
+
     def __call__(self, input_tensor, training=True, j_elim=None, pb=None):
         r"""g_out_ij = g_FS_ij + partial_i bar_partial_j phi_NN.
 
-        Equivalent to PhiFSModel.call in TF.
-        Uses nested jax.jacobian instead of tf.GradientTape.
+        Equivalent to PhiFSModel.call in TF, but the pulled back
+        ``del delbar phi`` comes from :func:`ddbar_phi_pullback` (2*nfold
+        Hessian-vector products) rather than from the full Hessian of phi.
         """
-        ncoords = self.ncoords
-
-        def phi_fn(x_single):
-            """Scalar NN output for a single point.
-
-            x_single has shape (n_in,); equinox Linear layers expect 1-D input,
-            so we call self.model directly without adding a batch dimension.
-            """
-            return self.model(x_single)[0]   # scalar: output shape (1,) -> ()
-
-        def d_phi_fn(x_single):
-            return jax.grad(phi_fn)(x_single)         # (2*ncoords,)
-
-        # d2_phi: (bSize, 2*ncoords, 2*ncoords)
-        dd_phi = jax.vmap(jax.jacobian(d_phi_fn))(input_tensor)
-
-        nc = ncoords
-        dx_dx_phi = 0.25 * dd_phi[:, :nc, :nc]
-        dx_dy_phi = 0.25 * dd_phi[:, :nc, nc:]
-        dy_dx_phi = 0.25 * dd_phi[:, nc:, :nc]
-        dy_dy_phi = 0.25 * dd_phi[:, nc:, nc:]
-        dd_phi_c = (dx_dx_phi + dy_dy_phi
-                    + 1j * (dx_dy_phi - dy_dx_phi)).astype(complex_dtype())
-
         pbs = self.pullbacks(input_tensor, j_elim=j_elim) if pb is None else pb
-        dd_phi_pb = jnp.einsum('xai,xij,xbj->xab', pbs, dd_phi_c, jnp.conj(pbs))
+        dd_phi_pb = ddbar_phi_pullback(self._phi, input_tensor, pbs,
+                                       sequential=self.map_tangents)
+        fs_cont = self.fubini_study_pb(input_tensor, pb=pbs, j_elim=j_elim)
+        return fs_cont + dd_phi_pb
 
+    def metric_full_hessian(self, input_tensor, training=True, j_elim=None,
+                            pb=None):
+        r"""``__call__`` through the full Hessian of phi (reference route).
+
+        Only the agreement tests of :func:`ddbar_phi_pullback` need this; it
+        costs ``2*ncoords`` Hessian-vector products per point instead of
+        ``2*nfold`` and holds the whole Hessian in memory.
+        """
+        pbs = self.pullbacks(input_tensor, j_elim=j_elim) if pb is None else pb
+        dd_phi_pb = ddbar_phi_pullback_full(self._phi, input_tensor, pbs)
         fs_cont = self.fubini_study_pb(input_tensor, pb=pbs, j_elim=j_elim)
         return fs_cont + dd_phi_pb
 
@@ -534,19 +682,52 @@ class ToricModel(FreeModel):
         gFSpb = jnp.einsum('xai,xij,xbj->xab', pullbacks, Js, jnp.conj(pullbacks))
         return gFSpb
 
+    def _section_norms(self, points, alpha):
+        r"""|s_a|^2 of the sections of generator alpha, up to one shift per point.
+
+        Returns ``mss`` with ``max_a mss[x, a] == 1`` and the ``log`` of the
+        factor taken out, i.e. ``|s_a(z)|^2 = exp(shift) * mss[:, a]``.  The
+        direct product ``prod(z_i ** d_ai)`` underflows float32 at large h11
+        -- a degree-87 monomial of a coordinate near 0.025 is 1e-140 -- and
+        when every section underflows ``kappa_alpha`` is 0, so the toric FS
+        metric and ``det g`` came out nan at about 1% of the points of the
+        h11 = 16 fan of the McAllister scan.  Working with the logs and
+        pulling out the largest section keeps the ratios (which is all the
+        metric and the potential use) exact to float32 rounding and finite at
+        any degree.
+
+        Args:
+            points (jnp.ndarray, [bSize, ncoords], complex): Coordinates.
+            alpha (int): Index of the Kahler cone generator.
+
+        Returns:
+            tuple: (mss, shift), shapes [bSize, n_sections] complex and
+            [bSize] real.
+        """
+        degrees = jnp.real(self.sections[alpha]).astype(real_dtype())
+        tiny = jnp.finfo(real_dtype()).tiny
+        # |z|^2, floored: log of an exactly vanishing coordinate would be -inf
+        # (and its gradient nan) while a zero exponent must contribute 0.
+        z2 = jnp.real(points * jnp.conj(points)).astype(real_dtype())
+        log_abs2 = jnp.log(jnp.maximum(z2, tiny))                    # (bSize, nc)
+        log_mss = log_abs2 @ degrees.T                                # (bSize, n_sections)
+        shift = jnp.max(log_mss, axis=-1)
+        mss = jnp.exp(log_mss - shift[:, None]).astype(complex_dtype())
+        return mss, shift
+
     @eqx.filter_jit
     def _fubini_study_n_metrics(self, points, n=None, t=None):
         r"""Toric FS metric contribution g_alpha = d_i dbar_j ln rho_alpha.
 
-        Equivalent to ToricModel._fubini_study_n_metrics in TF.
+        Equivalent to ToricModel._fubini_study_n_metrics in TF, with the
+        section norms from :meth:`_section_norms` (every term below is
+        homogeneous of degree zero in them, so the shift drops out).
         """
         if t is None:
             t = jnp.asarray(1. + 0j, dtype=complex_dtype())
         alpha = 0 if n is None else n
         degrees = self.sections[alpha]
-        ms = jnp.prod(
-            points[:, None, :] ** degrees[None, :, :], axis=-1)      # (bSize, n_sections)
-        mss = ms * jnp.conj(ms)
+        mss, _ = self._section_norms(points, alpha)                   # (bSize, n_sections)
         kappa_alphas = jnp.sum(mss, axis=-1)                          # (bSize,)
         zizj = points[:, :, None] * jnp.conj(points[:, None, :])     # (bSize, nc, nc)
         J_alphas = 1. / zizj
@@ -556,18 +737,45 @@ class ToricModel(FreeModel):
                   - jnp.einsum('xa,xb,ai,bj->xij', mss, mss, degrees, degrees))
         return J_alphas * coeffs * t / jnp.array(np.pi, dtype=complex_dtype())
 
+    def _patch_transitions(self):
+        r"""Number of patch transitions with the same fixed variables (toric).
+
+        The toric count: the largest number of patches in which one
+        coordinate is not a patch coordinate (i.e. may be transitioned to).
+        The projective-space count of :meth:`FSModel._patch_transitions` is
+        unrelated to the fan and is wrong here in both directions -- too
+        small as soon as a coordinate is free in more patches than that
+        (every scanned Kreuzer-Skarke polytope with h11 >= 3), and far too
+        large for a BASIS whose ``AMBIENT`` entries are section counts, which
+        then pads every transition tensor with unused slots.
+        """
+        return int(np.max(
+            np.sum(~np.array(self.patch_masks_arr, dtype=bool), axis=-2)))
+
     def _generate_helpers(self):
-        """Toric-specific helpers (patch degrees, transition data)."""
-        self.nTransitions = int(np.max(
-            np.sum(~np.array(self.patch_masks_arr), axis=-2)))
+        r"""Toric-specific helpers (patch degrees, transition data).
+
+        Equivalent to ToricModel._generate_helpers in TF/torch.  Nothing used
+        to call this in the JAX backend, so ``patch_degrees``,
+        ``transition_coefficients`` and ``transition_degrees`` stayed
+        unassigned and no toric model could be constructed at all;
+        ``proj_matrix`` was built from ``AMBIENT`` instead, which for toric
+        data is a list of section counts and raises before that.
+        """
+        self.nTransitions = self._patch_transitions()
         self.fixed_patches = self._generate_all_patches()
-        pm_np = np.array(self.patch_masks_arr)
-        gc_np = np.array(self.glsm_charges)
+        self.fixed_patches_n = None          # nhyper == 1 for a toric hypersurface
+        pm_np = np.array(self.patch_masks_arr, dtype=bool)
+        gc_np = np.array(np.real(self.glsm_charges)).astype(int)
         patch_degrees = get_all_patch_degrees(gc_np, pm_np)
-        w_of_x, del_w_of_x, del_w_of_z = compute_all_w_of_x(patch_degrees, pm_np)
+        w_of_x, del_w_of_x, del_w_of_z = compute_all_w_of_x(
+            patch_degrees, pm_np, dim_cy=self.nfold)
         self.patch_degrees = jnp.array(patch_degrees, dtype=complex_dtype())
         self.transition_coefficients = jnp.array(w_of_x, dtype=complex_dtype())
         self.transition_degrees = jnp.array(del_w_of_z, dtype=complex_dtype())
+        # The toric routines index patches by the fan, not by a product of
+        # projective factors; these two are unused and the ambient data a
+        # toric BASIS carries would not build them.
         self.proj_matrix = None
         self._proj_indices = None
 
@@ -599,10 +807,14 @@ class ToricModel(FreeModel):
 
     @eqx.filter_jit
     def _mask_to_patch_index(self, mask):
-        """Returns patch index in self.patch_masks_arr for each mask row."""
+        """Returns the patch index in self.patch_masks_arr of each mask row.
+
+        Every row matches exactly one patch, so argmax picks it out; the
+        former ``jnp.where(match)`` has a data-dependent shape and raises a
+        ConcretizationTypeError under jit.
+        """
         match = jnp.all(mask[:, None, :] == self.patch_masks_arr[None], axis=-1)
-        indices = jnp.where(match)
-        return indices[1:]
+        return jnp.argmax(match, axis=-1).astype(jnp.int32)
 
     @eqx.filter_jit
     def compute_transition_loss(self, points):
@@ -647,36 +859,29 @@ class ToricModel(FreeModel):
 
         Equivalent to ToricModel.get_transition_matrix in TF.
         """
-        same_patch = jnp.where(jnp.all(i_mask == j_mask, axis=-1))[0]
-        diff_patch = jnp.where(~jnp.all(i_mask == j_mask, axis=-1))[0]
-        n_p = fixed.shape[0]
-        n_p_red = diff_patch.shape[0]
-
-        i_mask_red = i_mask[diff_patch]
-        j_mask_red = j_mask[diff_patch]
-        fixed_red = fixed[diff_patch]
-        points_red = points[diff_patch]
-
-        i_patch_indices = self._mask_to_patch_index(i_mask_red).reshape(-1, 1)
-        j_patch_indices = self._mask_to_patch_index(j_mask_red).reshape(-1, 1)
+        # Which rows stay in their own patch.  Selecting the two groups with
+        # jnp.where(...) gives data-dependent shapes (not jittable), so the
+        # polynomial is evaluated for every row and masked afterwards.  The
+        # coordinates of the same-patch rows are replaced by ones first, so
+        # that negative exponents on a vanishing coordinate cannot put an inf
+        # (or a nan gradient) into the discarded branch.
+        same = jnp.all(i_mask == j_mask, axis=-1)
+        i_patch_indices = self._mask_to_patch_index(i_mask).reshape(-1, 1)
+        j_patch_indices = self._mask_to_patch_index(j_mask).reshape(-1, 1)
 
         tij_indices = jnp.concatenate(
-            [fixed_red, i_patch_indices, j_patch_indices], axis=-1)
+            [fixed, i_patch_indices, j_patch_indices], axis=-1)
         tij_degrees = self.transition_degrees[
             tij_indices[:, 0], tij_indices[:, 1], tij_indices[:, 2]]
         tij_coeff = self.transition_coefficients[
             tij_indices[:, 0], tij_indices[:, 1], tij_indices[:, 2]]
-        tij_red = jnp.prod(
-            points_red[:, None, None, :] ** tij_degrees, axis=-1)
-        tij_red = tij_coeff * tij_red
-        tij_red = jnp.transpose(tij_red, (0, 2, 1))
+        safe_points = jnp.where(same[:, None], jnp.ones_like(points), points)
+        tij_all = jnp.prod(
+            safe_points[:, None, None, :] ** tij_degrees, axis=-1)
+        tij_all = jnp.transpose(tij_coeff * tij_all, (0, 2, 1))
 
-        tij_eye = jnp.tile(jnp.eye(self.nfold, dtype=complex_dtype())[None],
-                           (n_p - n_p_red, 1, 1))
-        tij_all = jnp.zeros((n_p, self.nfold, self.nfold), dtype=complex_dtype())
-        tij_all = tij_all.at[diff_patch].set(tij_red)
-        tij_all = tij_all.at[same_patch].set(tij_eye)
-        return tij_all
+        tij_eye = jnp.eye(self.nfold, dtype=complex_dtype())[None]
+        return jnp.where(same[:, None, None], tij_eye, tij_all)
 
     @eqx.filter_jit
     def _fubini_study_n_potentials(self, points, n=None, t=None):
@@ -687,13 +892,12 @@ class ToricModel(FreeModel):
         if t is None:
             t = jnp.asarray(1. + 0j, dtype=complex_dtype())
         alpha = 0 if n is None else n
-        degrees = self.sections[alpha]
-        ms = jnp.prod(
-            points[:, None, :] ** degrees[None, :, :], axis=-1)
-        mss = ms * jnp.conj(ms)
+        mss, shift = self._section_norms(points, alpha)
         kappa_alphas = jnp.sum(mss, axis=-1)
+        # ln rho_alpha = shift + ln(sum_a mss_a); see _section_norms
+        log_kappa = shift + jnp.real(jnp.log(kappa_alphas)).astype(real_dtype())
         return (jnp.real(t / np.pi).astype(real_dtype())
-                * jnp.real(jnp.log(kappa_alphas)).astype(real_dtype()))
+                * log_kappa.astype(real_dtype()))
 
     def get_kahler_potential(self, points):
         r"""Toric FS Kähler potential K = sum_alpha t_alpha ln rho_alpha.
@@ -723,34 +927,31 @@ class PhiFSModelToric(ToricModel):
         super(PhiFSModelToric, self).__init__(*args, **kwargs)
         self.learn_kaehler = False
 
+    def _phi(self, x_single):
+        """Scalar NN output for a single point (1-D input, no batch axis)."""
+        return self.model(x_single)[0]
+
     def __call__(self, input_tensor, training=True, j_elim=None, pb=None):
         r"""g_out_ij = g_FS'_ij + partial_i bar_partial_j phi_NN.
 
-        Equivalent to PhiFSModelToric.call in TF.
-        Uses nested jax.jacobian instead of tf.GradientTape.
+        Equivalent to PhiFSModelToric.call in TF, with the pulled back
+        ``del delbar phi`` from :func:`ddbar_phi_pullback` (2*nfold
+        Hessian-vector products).  The full Hessian of phi is what made this
+        model need tens of GB at large h11: the toric nets of the McAllister
+        scan take all pairwise section products as inputs, so one Hessian is
+        quadratic in a feature count that reaches 87k.
         """
-        ncoords = self.ncoords
-
-        def phi_fn(x_single):
-            # x_single is (n_in,); equinox Linear expects 1-D input.
-            return self.model(x_single)[0]
-
-        def d_phi_fn(x_single):
-            return jax.grad(phi_fn)(x_single)
-
-        dd_phi = jax.vmap(jax.jacobian(d_phi_fn))(input_tensor)
-
-        nc = ncoords
-        dx_dx_phi = 0.25 * dd_phi[:, :nc, :nc]
-        dx_dy_phi = 0.25 * dd_phi[:, :nc, nc:]
-        dy_dx_phi = 0.25 * dd_phi[:, nc:, :nc]
-        dy_dy_phi = 0.25 * dd_phi[:, nc:, nc:]
-        dd_phi_c = (dx_dx_phi + dy_dy_phi
-                    + 1j * (dx_dy_phi - dy_dx_phi)).astype(complex_dtype())
-
         pbs = self.pullbacks(input_tensor, j_elim=j_elim) if pb is None else pb
-        dd_phi_pb = jnp.einsum('xai,xij,xbj->xab', pbs, dd_phi_c, jnp.conj(pbs))
+        dd_phi_pb = ddbar_phi_pullback(self._phi, input_tensor, pbs,
+                                       sequential=self.map_tangents)
+        fs_cont = self.fubini_study_pb(input_tensor, pb=pbs, j_elim=j_elim)
+        return fs_cont + dd_phi_pb
 
+    def metric_full_hessian(self, input_tensor, training=True, j_elim=None,
+                            pb=None):
+        r"""``__call__`` through the full Hessian of phi (reference route)."""
+        pbs = self.pullbacks(input_tensor, j_elim=j_elim) if pb is None else pb
+        dd_phi_pb = ddbar_phi_pullback_full(self._phi, input_tensor, pbs)
         fs_cont = self.fubini_study_pb(input_tensor, pb=pbs, j_elim=j_elim)
         return fs_cont + dd_phi_pb
 
