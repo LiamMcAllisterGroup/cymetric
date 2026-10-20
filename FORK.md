@@ -100,6 +100,68 @@ drive any optimisation work, and two of them are not where one would guess.
   (`jnp.einsum` defaults to `optimize='auto'`, so the JAX path may already be
   fine -- check before changing it.)
 
+## What this fork gives you, measured
+
+RTX 5090, quintic, 20k points, phase-1 batch 64, `JAX_DEFAULT_MATMUL_PRECISION=highest`.
+
+| | upstream `be772af` | this fork |
+|---|---|---|
+| JAX toric model, h11 = 1 / 5 / 10 | **cannot be constructed** | trains, 1.10 / 1.03 / 1.22 ms per step |
+| marginal epoch (quintic) | 0.2925 s | **0.0577 s** (5.07x) |
+| 20-epoch run, end to end | 8.11 s | **3.07 s** (2.64x) |
+| det g, wide input map | 1.333 GB | **0.212 GB** |
+| det g, tetraquadric | 2.44 ms | 1.39 ms (1.76x) |
+| recompiles across moduli points | several | zero |
+
+Plus correctness: a float32 underflow that made `det g` nan at about 1% of
+points at high h11, and two transition-loss defects that made the toric patch
+loss uncallable under jit.
+
+For point sampling and integration weights, use
+[cypoints](https://github.com/LiamMcAllisterGroup/cypoints) rather than this
+package: on the same card its toric sampler runs at 96,555 points/s against the
+105 points/s measured here, and it fixes two biases in the measure. That is the
+largest single speedup available anywhere in this stack and it lives in the
+other repository.
+
+## Where the next speedups are
+
+Not done, in the order worth attacking:
+
+1. **The per-call setup, which now dominates.** A single-epoch call costs 1.97 s
+   of which the epoch is 0.058 s; the remaining 1.9 s is the pullback precompute
+   plus XLA compilation. The precompute is still a host-driven chunk loop at the
+   top of `train_model`. At 33x the cost of an epoch it is the obvious target,
+   and nothing else in the training loop comes close.
+2. **Wiring point generation to `cypoints`**, worth roughly 900x on the toric
+   sampler, versus anything left in the training step.
+3. **A persistent XLA compilation cache**, which would remove most of the rest
+   of the per-call cost across runs.
+4. The Ricci measure and Ricci loss still take the full Hessian;
+   `ddbar_phi_pullback` applies to them verbatim but each HVP would nest a
+   forward pass through the metric and needs its own agreement test.
+
+## Known limitations
+
+- **GPU float32 uses TF32 by default**, so the assembled metric is Hermitian
+  only to about 1e-3 instead of 1e-6. Set
+  `JAX_DEFAULT_MATMUL_PRECISION=highest`, or accept it deliberately. This is
+  upstream behaviour, not introduced here, and the test suite only passes on
+  GPU with it set.
+- **ROCm is not usable.** On an AMD Navi 22 the backend initialises and
+  computes, but the suite gives 86 failed / 12 passed against 98 passed on CUDA
+  and 97 on the same machine's CPU. Treat this fork as CUDA-only until someone
+  investigates.
+- **Two upstream numpy defects are still present and affect all three
+  backends.** `compute_all_w_of_x` least-squares-fits and rounds the transition
+  exponents. On one scanned fan it warns 352 times; on another, a smooth fan
+  with no warning at all, the transition loss is still 2.4e-4 at 6% of points
+  under x64. A few patch pairs are silently wrong. This is a correctness issue
+  and is the most important open item in the package.
+- The transition-loss normalisation divides by `nTransitions` including
+  identity-padded slots, so a coordinate free in fewer patches is scaled down.
+  Upstream behaviour, preserved deliberately, but arguably wrong.
+
 ## Benchmarks
 
 `benchmarks/` carries a harness and a baseline for pristine upstream. It is the
