@@ -49,29 +49,39 @@ turn into passing cases when fixed rather than being forgotten.
 Measured, RTX 5060 Ti, upstream `be772af`. These are the facts that should
 drive any optimisation work, and two of them are not where one would guess.
 
-- **About 90% of a training epoch is not the metric step.** A quintic epoch
-  measures 2.04 s; the steps inside it account for about 0.20 s. The remainder
-  is `train_model`'s host side: `np.random.permutation` over the training set
-  plus a numpy fancy-index gather of each batch *out of device arrays*, every
-  step, plus per-step `eqx.tree_at` rebuilds and `float()` synchronisations.
-  It is geometry-independent -- the tetraquadric epoch is 3% slower than the
-  quintic's despite a step that costs twice as much.
-- **A faster GPU barely helps, which is the same finding from the hardware side.**
-  The identical sweep on an RTX 5090 against the RTX 5060 Ti:
+- **Short runs are dominated by once-per-call setup, not by the epoch.** On an
+  RTX 5090, quintic, 20k points, batch 64: a single-epoch `train_model` call
+  costs 2.34 s, of which the *marginal* epoch -- obtained as
+  `(t(4 epochs) - t(1 epoch)) / 3`, which subtracts the setup -- is only
+  0.29 s. The other 2.04 s is the pullback precompute plus XLA compilation,
+  paid once per call. **Anything that divides a short run's wall time by the
+  epoch count therefore measures mostly setup.** The harness's
+  `train_model_jax.*` cases report exactly that quotient, so use them for
+  before/after comparison on identical settings, never as "the cost of an
+  epoch".
+
+  An earlier version of this file claimed, on that quotient, that about 90% of
+  an epoch was host-side overhead. That was an artefact of the setup being
+  counted inside it. Measured against the marginal epoch, the pre-`lax.scan`
+  epoch was **89% device work** and only 11% host. The conclusion survives in a
+  different form: the thing worth attacking is the per-call setup, and the
+  pullback precompute is the largest piece of it.
+
+- **A faster GPU barely helps on short runs**, for the same reason. The
+  identical sweep on an RTX 5090 against the RTX 5060 Ti:
 
   | case | 5060 Ti | 5090 | gain |
   |---|---|---|---|
   | step, batch 64 | 0.79 ms | 0.91 ms | 0.87x |
   | step, batch 1024 | 1.28 ms | 1.10 ms | 1.16x |
   | step, batch 10000 | 15.41 ms | 3.97 ms | **3.88x** |
-  | step, tetraquadric batch 1024 | 2.60 ms | 0.98 ms | 2.64x |
   | det g, quintic | 2.65 ms | 1.38 ms | 1.91x |
-  | `train_model`, quintic | 6.11 s | 5.36 s | **1.14x** |
-  | `train_model`, tetraquadric | 6.29 s | 6.03 s | **1.04x** |
+  | `train_model`, quintic (3 epochs/call) | 6.11 s | 5.36 s | 1.14x |
 
-  A card roughly 4x faster on the arithmetic buys 4 to 14 per cent end to end,
-  and at batch 64 it is *slower*, which is pure kernel-launch latency. So the
-  available win is in the host loop, not in the device or in the kernels.
+  The step gets up to 3.9x faster while the end-to-end call gains 14%, because
+  most of that call is compilation and the host-side precompute, which a faster
+  card does not shorten. At batch 64 the bigger card is *slower*: pure
+  kernel-launch latency.
 
 - **Compilation dominates anything that retraces**: 4.2 s to compile a 0.79 ms
   step, a factor of 5200. `train_model` flips its `learn_*` flags between two
