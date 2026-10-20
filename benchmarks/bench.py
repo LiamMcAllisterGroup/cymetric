@@ -276,6 +276,12 @@ def run_one_case(case, repeats_scale=1.0, quick=False):
         record['traceback'] = traceback.format_exc()[-3000:]
     record['wall_s'] = time.perf_counter() - t0
     record['memory'] = device_memory_stats()
+    try:
+        import resource
+        record['host_peak_rss_mb'] = round(
+            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
+    except Exception:
+        record['host_peak_rss_mb'] = None
     record['device'] = device_provenance()
     return record
 

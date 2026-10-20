@@ -32,6 +32,16 @@ CUDA_VISIBLE_DEVICES=1 XLA_PYTHON_CLIENT_PREALLOCATE=false \
 python benchmarks/bench.py --table-from benchmarks/baseline-rtx5060ti.json
 ```
 
+If jax reports `INTERNAL: libdevice not found at ./libdevice.10.bc` or
+`An NVIDIA GPU may be present ... but a CUDA-enabled jaxlib is not installed`,
+the CUDA plugin is incomplete: `pip install "jax[cuda13]==0.12.0"` (or
+`jax-cuda13-plugin jax-cuda13-pjrt nvidia-cuda-nvcc nvidia-nvvm` for a
+CUDA-13 wheel set that already has the other nvidia packages). The harness
+does not fail in that case -- it falls back to CPU and labels every record
+accordingly -- which is exactly the situation in which a baseline would
+silently be worthless, so check the `device` line the harness prints before
+trusting a number.
+
 `bench.py` prepends its own repository root to `sys.path` and records the
 resolved `cymetric.__file__` in the provenance block, so an editable install
 somewhere else cannot silently be the thing that got measured. Point sets are
@@ -228,10 +238,13 @@ baseline file). They are recorded, not worked around.
   `flock` and were alone on the reference card, but the *host* side (point
   generation, which is pure numpy/joblib on the CPU, and the Python dispatch
   in every GPU case) competed with it for 24 CPU threads at a load average
-  around 3. The p25-p75 columns are the honest measure of how much that
-  matters: it is small for the GPU step times (a few percent) and visible for
-  the CPU cases. Treat CPU-side point-generation rates as +-20%, not as
-  three significant figures.
+  that rose from 3 to 7 during the run. The p25-p75 columns are the honest
+  measure of how much that matters, and it is not uniform: the large-batch GPU
+  steps and the point-generation rates are reproducible to a few percent
+  (`bs10000`: 15.1-15.6 ms; `pointgen.quintic.points`: 164.0k-165.7k
+  points/s), but the *small*-batch GPU steps are host-latency bound and spread
+  by +-25% (`bs64`: 0.59-0.95 ms), and the torch CPU case spreads by 5x. Read
+  the small-batch step times as "under a millisecond", not as 0.79.
 * **Point generation is dominated by the monomial count, not by h11.** The
   Fermat quintic (5 monomials) and the dense quintic (126 monomials) live in
   the same ambient space with the same h11 and differ by ~40x. Any
@@ -255,3 +268,144 @@ baseline file). They are recorded, not worked around.
 * **The toric sampler numbers include its per-call auto-tuning**, which is why
   `pointgen.toric.h11_5.n500` has a much worse per-point rate than the same
   geometry at n_p = 2000.
+
+## Baseline
+
+Recorded on 2026-10-20 (UTC 16:17) on `compute02`: **NVIDIA GeForce RTX 5060 Ti**
+(16 GB, driver 595.99.02, `CUDA_VISIBLE_DEVICES=1`,
+`XLA_PYTHON_CLIENT_PREALLOCATE=false`), 24 CPU threads, Linux 7.0.0,
+python 3.12.15, jax/jaxlib 0.12.0, equinox 0.13.8, optax 0.2.8, numpy 2.5.4,
+torch 2.14.1+cu130, library commit `be772af` with the harness commit on top
+(`library_is_pristine: true` -- no file under `cymetric/` was modified).
+Full records, including every raw sample, in
+[`baseline-rtx5060ti.json`](baseline-rtx5060ti.json); `python
+benchmarks/bench.py --table-from benchmarks/baseline-rtx5060ti.json` reprints
+the table below. 25 of 29 cases ran; 4 are blocked upstream.
+
+### 1. Point generation (CPU, 4 joblib workers for the CICY sampler)
+
+| case | points/s | p25-p75 | first call | median | ncoords | monomials |
+|---|---|---|---|---|---|---|
+| `pointgen.quintic.points` | **165 553** | 164 024 - 165 685 | 0.46 s | 0.121 s | 5 | 5 |
+| `pointgen.quintic.weights` | **51 137** | 50 212 - 51 750 | 0.83 s | 0.391 s | 5 | 5 |
+| `pointgen.quintic_dense.points` | 4 351 | 4 347 - 4 353 | 5.48 s | 4.60 s | 5 | 126 |
+| `pointgen.quintic_dense.weights` | 710 | 709 - 711 | 28.5 s | 28.2 s | 5 | 126 |
+| `pointgen.bicubic.points` | 11 378 | 11 342 - 11 513 | 2.68 s | 1.76 s | 6 | 100 |
+| `pointgen.bicubic.weights` | 3 522 | 3 513 - 3 550 | 6.73 s | 5.68 s | 6 | 100 |
+| `pointgen.tetraquadric.points` | 9 969 | 9 805 - 9 970 | 3.21 s | 2.01 s | 8 | 81 |
+| `pointgen.tetraquadric.weights` | 2 807 | 2 806 - 2 835 | 8.23 s | 7.12 s | 8 | 81 |
+| `pointgen.toric.h11_1` | **105** | 104 - 105 | 19.4 s | 19.1 s | 5 | 126 |
+| `pointgen.toric.h11_5` | **205** | 204 - 205 | 9.62 s | 9.78 s | 9 | 50 |
+| `pointgen.toric.h11_5.n500` | 131 | 131 - 131 | 3.83 s | 3.82 s | 9 | 50 |
+| `pointgen.toric.h11_10` | **90** | 90 - 91 | 22.1 s | 22.1 s | 14 | 29 |
+
+Point generation, not the metric network, is what sets the cost of a toric
+training set: 20 000 points on the h11 = 10 geometry is ~3.7 minutes of
+single-core Python, against 0.12 s for the Fermat quintic. The honest
+apples-to-apples comparison is the h11 = 1 row of the toric sampler against
+`quintic_dense`, because that KS geometry *is* a dense quintic in P^4 (5
+coordinates, 126 monomials): 105 points/s versus 4 351, i.e. the Metropolis
+sampler costs **41x** more per point than the line sampler on the same
+hypersurface. Against the Fermat quintic the ratio is 1 577x, but most of that
+is the complex structure, not the sampler. Note also that the toric rate does
+not fall monotonically with h11 -- h11 = 5 is the fastest of the three --
+because the chain's cost follows the hypersurface's monomial count (126, 50,
+29 respectively) and the auto-tuned thinning, not h11; comparing
+`pointgen.toric.h11_5` at n_p = 2000 (205 points/s) with the same geometry at
+n_p = 500 (131 points/s) separates the two: a fixed
+~1.8 s per call of initial point search and auto-tuning, and a chain that then
+runs at ~250 points/s.
+
+### 2. JAX metric training and det g (GPU 1)
+
+| case | compile (first call) | ms/step median | p25-p75 | ms/step pipelined | s/epoch | peak dev mem |
+|---|---|---|---|---|---|---|
+| `train_jax.quintic.bs64` | 4.15 s | **0.79** | 0.59 - 0.95 | 0.60 | 0.17 (281 steps) | 199 MB |
+| `train_jax.quintic.bs1024` | 4.87 s | **1.28** | 1.20 - 1.51 | 1.79 | 0.03 (17 steps) | 214 MB |
+| `train_jax.quintic.bs10000` | 5.46 s | **15.4** | 15.1 - 15.6 | 15.0 | 0.015 (1 step) | 574 MB |
+| `train_jax.bicubic.bs1024` | 4.79 s | 1.63 | 1.53 - 1.70 | 1.52 | 0.026 | 216 MB |
+| `train_jax.tetraquadric.bs1024` | 5.12 s | 2.60 | 2.44 - 2.69 | 2.51 | 0.043 | 296 MB |
+| `train_model_jax.quintic` | 17.5 s / 3 epochs | - | - | - | **2.04** end-to-end | 543 MB |
+| `train_model_jax.tetraquadric` | 17.4 s / 3 epochs | - | - | - | **2.10** end-to-end | 731 MB |
+| `detg_jax.quintic.n20000` | 1.10 s | 2.65 per 15k points | 2.52 - 2.76 | - | 5.7e6 points/s | 184 MB |
+| `detg_jax.tetraquadric.n20000` | 1.12 s | 5.17 per 15k points | 5.13 - 5.22 | - | 2.9e6 points/s | 264 MB |
+
+Three things stand out.
+
+* **Compilation is 5 200x the step.** 4.2 s to compile a step that then takes
+  0.79 ms. Anything that retraces -- a new batch shape, a changed
+  `learn_*` flag, a rebuilt step function -- pays it again. `train_model`
+  switches flags between its two phases every epoch, which is why its first
+  call costs 17.5 s against 6.1 s for the next identical call.
+* **The default batch size wastes the GPU.** 64 points cost 0.79 ms (12 us per
+  point); 10 000 points cost 15.4 ms (1.5 us per point). Phase 1 of
+  `train_model` runs at batch 64, so it is running an 8x-underutilised device.
+* **Most of an epoch is not the metric.** The measured end-to-end epoch on the
+  quintic is 2.04 s, while the steps it contains account for about 0.20 s
+  (281 x 0.60 ms phase-1 steps plus two phase-2 steps). Roughly 90% of the
+  epoch is host-side: `np.random.permutation` over the training set and a
+  numpy fancy-index gather of every batch out of device arrays, per step, plus
+  the per-step `eqx.tree_at` rebuilds and `float()` syncs. That is where the
+  easy factor of several is, and it is independent of the geometry (the
+  tetraquadric epoch is only 3% slower than the quintic epoch despite a 4x
+  more expensive step).
+
+### 3. Cost versus h11 on the toric workload (numpy, CPU)
+
+The JAX toric model cannot be built (section 4), so the h11 curve is measured
+on `ToricPointGeneratorMC.fubini_study_metrics`, the numpy original that
+`cymetric.jax.models.models.ToricModel._fubini_study_n_metrics` mirrors
+formula for formula. Same batch of 500 points throughout.
+
+| case | generators | sections per generator | sum of sections^2 | ncoords | FS metric points/s | det g points/s | median |
+|---|---|---|---|---|---|---|---|
+| `fsmetric_toric_numpy.h11_1` | 1 | 5 | 25 | 5 | **235 225** | 204 079 | 2.13 ms |
+| `fsmetric_toric_numpy.h11_5` | 6 | 4,2,2,3,3,3 | 51 | 9 | **30 729** | 29 815 | 16.3 ms |
+| `fsmetric_toric_numpy.h11_10` | 12 | 5,2,2,3,4,5,2,3,3,4,4,2 | 141 | 14 | **4 852** | 4 746 | 103 ms |
+
+Cost per point grows **48x from h11 = 1 to h11 = 10** on these geometries.
+Most of that is an implementation artefact, not geometry. The routine's two
+contractions are written as
+
+```python
+np.einsum('xa,xb,ai,aj->xij', mss, mss, degrees, degrees)
+- np.einsum('xa,xb,ai,bj->xij', mss, mss, degrees, degrees)
+```
+
+and `np.einsum` defaults to `optimize=False`, so both are evaluated as naive
+double sums over the sections `a, b` even though both factorise (the first is
+`(sum_b mss_b) * (sum_a mss_a d_ai d_aj)`, the second is the outer product of
+`sum_a mss_a d_ai` with itself). Measured on the h11 = 10 geometry, for the
+largest generator and the same 500 points:
+
+| variant | time | agreement with as-written |
+|---|---|---|
+| as written (`optimize` default) | 15.5 ms | - |
+| `optimize=True` | **0.3 ms** | 1.8e-15 relative |
+| hand-factorised | 2.5 ms | 1.4e-15 relative |
+
+That is ~50x on the contraction that dominates the h11 = 10 case, for one
+keyword, bit-for-bit equivalent. Two consequences for reading the curve
+above: (a) the numpy toric path -- which is what the toric point generator and
+its weights use today -- has a cheap and large win available; and (b)
+`jax.numpy.einsum` defaults to `optimize='auto'`, so a JAX port of the same
+formula probably does *not* inherit the quadratic term, and this curve is an
+upper bound on what the JAX toric model should cost, not a prediction of it.
+The residual h11 dependence -- sections per generator, number of generators,
+and `ncoords^2` in the metric's index pair -- is real and will show up in any
+backend.
+
+### 4. Blocked cases, verbatim
+
+| case | status | error |
+|---|---|---|
+| `train_jax.toric.h11_1` | blocked | `TypeError: Field 'patch_degrees' was not initialized.` |
+| `train_jax.toric.h11_5` | blocked | `ValueError: shape mismatch: value array of shape (12,12) could not be broadcast to indexing result of shape (12,4)` |
+| `train_jax.toric.h11_10` | blocked | `ValueError: shape mismatch: value array of shape (12,12) could not be broadcast to indexing result of shape (12,2)` |
+| `metric_torch.toric.h11_5` | blocked | same shape mismatch, on both cuda and cpu |
+| `metric_torch.toric.h11_1` | ok, but | forward only: `compute_loss` raises `IndexError: The shape of the mask [10240, 5] ... does not match ... [2048, 5]`, and the model is CPU-only (`info.device_errors`) |
+
+The `metric_torch.toric.h11_1` timing (96.6 ms per 512-point batch, p25-p75
+57-324 ms) is a *CPU* number taken while the box was loaded, and its spread is
+5x: treat it as an order of magnitude, nothing more. Its `peak_dev_mem` of
+0 MB is an artefact of reading JAX's device counters in a case that uses torch.

@@ -431,6 +431,61 @@ def detg_jax(geometry, n_points, chunk, repeats, model_name='PhiFSModel'):
     }
 
 
+def fsmetric_toric_numpy(h11, n_points, repeats):
+    """Toric Fubini-Study metric and det g in numpy, as a function of h11.
+
+    This is the h11-scaling measurement the JAX toric model cannot give today
+    (see ``train_jax_toric``), on the geometries the group actually cares
+    about.  ``ToricPointGeneratorMC.fubini_study_metrics`` is the numpy
+    original that ``cymetric.jax.models.models.ToricModel`` mirrors formula
+    for formula, including the two double-sum einsums over the sections of
+    each Kaehler-cone generator -- so its cost curve in the number of sections
+    is the curve the JAX model inherits, and the number to beat.
+
+    Both the ambient metric and the pulled-back ``det g`` on the CY are timed;
+    the record also carries the section counts, since the einsum is quadratic
+    in the number of sections per generator and that, not h11 itself, is what
+    grows.
+    """
+    pg, blob = toric_pointgen(h11)
+    points = pg.generate_points(n_points)
+    pullbacks = pg.pullbacks(points)
+    td = blob['toric_data']
+    sections = [len(s) for s in td['exps_sections']]
+
+    def fs_call():
+        return pg.fubini_study_metrics(points)
+
+    timing = time_calls(fs_call, repeats)
+
+    def detg_call():
+        Js = pg.fubini_study_metrics(points)
+        g = np.einsum('xai,xij,xbj->xab', pullbacks, Js, np.conj(pullbacks))
+        return np.real(np.linalg.det(g))
+
+    timing_detg = time_calls(detg_call, max(1, repeats // 2))
+
+    rate = n_points / timing['median_s']
+    return {
+        'timing': timing,
+        'timing_detg': timing_detg,
+        'derived': {
+            'points_per_s_fs_metric': rate,
+            'us_per_point_fs_metric': 1e6 * timing['median_s'] / n_points,
+            'points_per_s_detg': n_points / timing_detg['median_s'],
+            'sections_squared_sum': int(sum(s * s for s in sections)),
+        },
+        'info': {'h11': h11, 'ncoords': int(pg.ncoords), 'backend': 'numpy',
+                 'n_points': n_points, 'n_generators': len(sections),
+                 'sections_per_generator': sections,
+                 'what_is_timed': 'fubini_study_metrics on the whole batch; '
+                                  'timing_detg adds the pullback contraction '
+                                  'and a 3x3 determinant'},
+        'headline': '%.0f points/s FS metric, %.0f points/s det g'
+                    % (rate, n_points / timing_detg['median_s']),
+    }
+
+
 # ---------------------------------------------------------------------------
 # cases: toric metric model (currently blocked upstream)
 # ---------------------------------------------------------------------------
@@ -677,6 +732,18 @@ CASES = [
     _case('detg_jax.tetraquadric.n20000', 'detg_jax', 'detg_jax',
           'det g over a point set, tetraquadric (h11=4)',
           dict(geometry='tetraquadric', n_points=20000, chunk=5000), 7),
+
+    # ---- toric metric cost vs h11 (numpy: the runnable h11 curve) --------
+    _case('fsmetric_toric_numpy.h11_1', 'fsmetric_toric', 'fsmetric_toric_numpy',
+          'toric FS metric + det g in numpy, h11=1 (1 generator, 5 sections)',
+          dict(h11=1, n_points=500), 5),
+    _case('fsmetric_toric_numpy.h11_5', 'fsmetric_toric', 'fsmetric_toric_numpy',
+          'toric FS metric + det g in numpy, h11=5 (6 generators, 17 sections)',
+          dict(h11=5, n_points=500), 5),
+    _case('fsmetric_toric_numpy.h11_10', 'fsmetric_toric',
+          'fsmetric_toric_numpy',
+          'toric FS metric + det g in numpy, h11=10 (12 generators, 39 sections)',
+          dict(h11=10, n_points=500), 5),
 
     # ---- toric metric models (blocked upstream) --------------------------
     _case('train_jax.toric.h11_1', 'train_jax_toric', 'train_jax_toric',
