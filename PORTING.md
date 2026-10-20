@@ -604,3 +604,183 @@ Read honestly:
 To reproduce: copy `benchmarks/` from `bench-baseline` into this worktree and
 run `CUDA_VISIBLE_DEVICES=0 python benchmarks/bench.py --groups
 train_jax_toric,train_jax,train_model_jax,detg_jax`.
+
+## Addendum: the epoch itself, as one program per phase (branch `perf-epoch-scan`)
+
+`cymetric/jax/models/helper.py`: `_train_step` (the step body, extracted),
+`_phase_batching`, `_make_phase_runner`, `_replay_metrics`, `_with_flags`
+(all new), `train_model` (restructured).  `_make_train_step` and `_shuffled`
+keep their signatures and behaviour.
+
+Item 6 above took the per-batch gather off the host and left the loop itself,
+noting that a `lax.scan` per epoch "restructures the loop, the callbacks and
+the metrics".  That is what this does.
+
+Each phase of each epoch is now **one jitted program**:
+
+* `_make_phase_runner(optimizer, batch_size, collect_batches)` returns an
+  `eqx.filter_jit` function that `lax.scan`s the step body over the batch axis,
+  carrying `(nn_params, opt_state, loss_sum)`.
+* Only the **network parameters** are carried.  The rest of the model -- BASIS,
+  the patch tables, `kappa` -- is a free variable of the enclosing jitted
+  function, so it is a loop-invariant operand of the scan rather than something
+  copied per iteration.  Carrying `eqx.filter(model, eqx.is_array)` instead
+  would put `transition_degrees` (32 MB already at h11 = 10) in the carry.
+* `loss_sum` is accumulated **in the carry**, not by stacking and summing, so
+  the floating-point summation order is the host loop's and the reported
+  average is bit-identical rather than merely close.
+* The two programs are built **once, outside the epoch loop**, and the
+  `learn_*` flags are static on an `eqx.Module`, so a whole run compiles two
+  phase programs and reuses them.  `test_the_programs_are_built_once_not_once_per_epoch`
+  counts XLA compilations and asserts a four-epoch run compiles exactly what a
+  one-epoch run compiles.
+
+Semantics held fixed, deliberately:
+
+* **The same batches in the same order.**  The permutation is still drawn with
+  `np.random.permutation` on the host, once per phase per epoch, through the
+  unchanged `_shuffled`.  A `jax.random` permutation would be cheaper and
+  device-side, and would change every batch of every seeded run; that is not a
+  trade this item is allowed to make.
+* **The ragged last batch.**  `range(0, n_train, batch_size)` clipped its last
+  slice, so a phase is `n_train // batch_size` batches of `batch_size` plus a
+  shorter one.  The short batch cannot join the scan, and padding it would
+  change both the summed gradient it contributes (the step differentiates
+  `sum(total_loss)`, not the mean) and the mean loss it reports.  It therefore
+  runs as one extra step **inside the same jitted program** -- so it costs one
+  more compile, not one more dispatch.  `_phase_batching` is the arithmetic and
+  `test_phase_batches_cover_the_shuffle_exactly` pins it: a ceil instead of a
+  floor there would silently drop or duplicate the tail, which the loss history
+  would hide because it is an average.
+* **The two-phase schedule**, the optimiser updates, and every key of the
+  returned dict, including the per-component histories (which, as before,
+  record the *last* batch of the phase -- the ragged one when there is one).
+
+What could not go inside the scan, and where it went instead:
+
+* **Custom metrics.**  `metrics._RunningMean.update_state` is host Python with a
+  `float()` in it and a user-extensible subclass hierarchy, so it cannot be
+  traced.  When `custom_metrics` is non-empty the phase additionally stacks the
+  per-batch loss components, mean losses and sample weights, and
+  `_replay_metrics` feeds them to the metrics in batch order after the phase
+  has run.  The running means come out bit-identical; the host still iterates
+  once per batch, but over arrays already pulled to the host in one transfer,
+  with no device dispatch per step.  Nothing is stacked when there are no
+  metrics, because the stack costs device memory proportional to the number of
+  steps.
+* **Callbacks** already ran at epoch granularity and are untouched.  They are
+  still host-side and still do their own batched validation loops with a
+  `float()` per batch (`KaehlerCallback`, `RicciCallback`); that is their own
+  cost, unchanged by this item.
+* **tqdm** moved from the batch loop to the epoch loop, because there is no
+  longer a per-batch host iteration to tick.  A long run now shows an
+  epoch-level bar instead of two per-epoch batch bars.
+* **The pullback precompute** at the top of `train_model` is still a host-driven
+  chunk loop, once per call.  See the measurement note below -- it is a bigger
+  share of a short run than the epoch is.
+* **Per-epoch host work that remains**: one permutation draw and four gathers
+  per phase (through `_shuffled`, outside the jit), ten `eqx.tree_at` flag
+  flips, and six `float()` synchronisations per phase (the phase average and
+  the five component means) because the returned history is Python floats.
+  That is O(1) per epoch instead of O(batches).
+
+### Correctness evidence
+
+Two independent gates, both in `tests/test_jax_epoch_scan.py`.
+
+1. **Against the pre-change code**, captured before the change:
+   `tests/data/epoch_scan_reference.npz` is a float32 CPU capture of two short
+   runs under the host loop at commit `6a01f82` (quintic, 3 epochs, batches
+   (64, 100), no sample weights; `h11_3`, 2 epochs, batches (64, 200), with
+   sample weights -- both with four custom metrics and a `SigmaCallback`, and
+   both with a ragged last batch in phase 1).  Compared: both phase histories,
+   all five component histories, the callback's per-epoch value, the four
+   metrics' final running means, and the flattened final network parameters.
+
+   | run | worst relative difference |
+   |---|---|
+   | quintic | 1.1e-7 (`Volume loss phase`), params 4.2e-8 |
+   | `h11_3` | 1.7e-7 (`volk_loss`), params **bit-exact** |
+
+   Everything else in both runs is bit-exact, including every
+   `General loss phase` value and all four metric results on `h11_3`.  1e-7 is
+   float32 eps.
+
+2. **Against a literal host loop, at any precision.**  The stored reference is
+   a float32 CPU artefact, so `test_the_scan_is_the_host_loop` transcribes the
+   old loop -- one `eqx.filter_jit` step dispatched per batch, using the
+   library's own `_shuffled` and `_with_flags` -- and compares it with
+   `train_model` on the same configurations and seed:
+
+   | | float32 | x64 |
+   |---|---|---|
+   | quintic, phase histories | 1.1e-7 | 6.0e-16 |
+   | quintic, final parameters | 4.2e-8 | 7.5e-17 |
+   | `h11_3`, both | bit-exact | bit-exact |
+
+   The x64 column is the one that matters: the scanned epoch and the dispatched
+   epoch agree to double rounding, so this is the same loop, not a loop that
+   happens to land nearby in float32.
+
+Suite on compute03 (CPU, the development machine): **102 passed, 1 failed** in
+float32 and **100 passed, 3 skipped** under x64, against 97/98 before.  The one
+failure is the pre-existing
+`test_jax_metric_routes.py::test_factorised_fs_contraction_matches_the_double_sum[h11_10]`,
+which fails on that machine before this change as well (jax 0.11.1 there
+against 0.12.0 locally; it passes under x64).  The two new reference tests skip
+under x64 because the stored capture is float32; gate 2 covers x64.
+`tests/test_jax_cicy_unchanged.py` is green.
+
+### Speed: a CPU development signal only, not a result
+
+Measured on compute03, **JAX on an AMD CPU**, nothing else running.  **No
+number here is a performance result**: different vendor, much weaker hardware,
+and the whole point of the change is host dispatch, whose share depends
+entirely on how fast the device arithmetic is.  The real figure has to be
+re-measured on CUDA.
+
+The quantity measured is the **marginal** epoch, `(time for 4 epochs - time for
+1 epoch) / 3`, which excludes the once-per-call pullback precompute and the
+compilation that a single-epoch call also pays, against the same steps
+dispatched one at a time (`n_steps * one warm jitted step`).  Quintic, 6400
+points (the fixture tiled), phase-2 batch 3200:
+
+| phase-1 batch | steps/epoch | marginal epoch, host loop | marginal epoch, scan | change | epoch / summed steps, before -> after |
+|---|---|---|---|---|---|
+| 64 | 100 + 2 | 0.325 s | 0.229 s | 1.42x | 1.04 -> 0.74 |
+| 16 | 400 + 2 | 0.568 s | 0.246 s | 2.31x | 1.15 -> 0.51 |
+
+Read honestly:
+
+* **The win scales with the number of steps per epoch**, 1.42x at 102 steps and
+  2.31x at 402, which is the signature of per-step host cost being removed
+  rather than the arithmetic getting faster.  The per-step host overhead on
+  this CPU was 0.13-0.19 ms against a 0.9-1.8 ms step, so there was much less
+  of it to remove here than the 79% quoted on an RTX 5090.
+* The ratio falling **below 1.0** says the scanned epoch is cheaper than the
+  same steps as separate programs, not merely free of dispatch: inside a scan
+  XLA keeps the parameters and optimiser state in place instead of
+  re-partitioning the model pytree and re-materialising buffers per call.
+* The final losses of the two versions agree to 2e-7 relative at 6400 points
+  and 400 steps per epoch, which is a third correctness check at a size the
+  fixtures do not reach.
+* **A caveat about the 4.8x headline this item was given.**  On this CPU a
+  single-epoch `train_model` call costs 2.09 s of which only 0.23 s is the
+  epoch; the other 1.86 s is the pullback precompute and compilation, both
+  once per call.  `benchmarks/cases.py::train_model_jax` reports
+  `median_s / epochs`, so a "per epoch" figure from it carries a share of that
+  setup, and the device-work fraction computed against it is correspondingly
+  too small.  That does not make the host overhead unreal -- the table above
+  measures it directly -- but the 21% / 79% split should be re-derived on CUDA
+  against the *marginal* epoch before it is quoted as the remaining headroom.
+
+### What to re-measure on CUDA
+
+* The marginal epoch, before and after, for the quintic and the tetraquadric at
+  batch 64 -- i.e. the two `train_model_jax` cases, plus a second run at a
+  different epoch count so the setup can be subtracted.
+* Whether the phase-2 batch (10000 points in one step) now dominates what is
+  left, in which case the next item is its memory and not the loop.
+* Compile time and peak memory of the two phase programs at high h11: the scan
+  body contains the whole step, and the stacked per-batch components (only when
+  custom metrics are passed) are `n_steps x batch` per loss term.

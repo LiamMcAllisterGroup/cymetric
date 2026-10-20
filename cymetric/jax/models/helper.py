@@ -54,11 +54,66 @@ def prepare_basis(basis, dtype=None):
 # Per-step loss and gradient computation
 # ---------------------------------------------------------------------------
 
+def _train_step(model, opt_state, x, y, sample_weight, pb, optimizer):
+    r"""One optimizer step, as a plain (traceable) function.
+
+    The body of the training step, with no jit of its own, so that the same
+    arithmetic can serve both as a standalone jitted call (see
+    :func:`_make_train_step`) and as the body of a ``lax.scan`` over a whole
+    phase (see :func:`_make_phase_runner`).
+
+    Differentiates ONLY through the NN backbone (``model.model``), matching
+    TF's ``trainable_variables = model.model.trainable_variables``.
+
+    Args:
+        model: a JAX FreeModel (or subclass) instance.
+        opt_state: the optax state for ``eqx.filter(model.model, eqx.is_array)``.
+        x, y (jnp.ndarray): one batch of points and labels.
+        sample_weight (jnp.ndarray or None): optional per-point weights.
+        pb (jnp.ndarray or None): precomputed pullbacks for ``x``.
+        optimizer (optax.GradientTransformation): the optimizer.
+
+    Returns:
+        tuple: ``(new_model, new_opt_state, mean_loss, loss_dict)``.
+    """
+    def loss_fn(nn_model):
+        # Reconstruct the full model with the candidate NN
+        full_model = eqx.tree_at(lambda m: m.model, model, nn_model)
+        total_loss, loss_dict = full_model.compute_loss(x, y, sample_weight, pb=pb)
+        # Sum (not mean) over the batch for the gradient target: TF's
+        # tape.gradient(total_loss, ...) on a non-scalar [bSize] target
+        # implicitly uses output_gradients=ones_like(total_loss), i.e. it
+        # differentiates sum(total_loss). Matching that here keeps the
+        # raw gradient magnitude (and hence gclipping's effect) the same
+        # scale as TF; using mean() shrinks gradients by batch_size and
+        # makes gclipping's global-norm clip rarely engage.
+        return jnp.sum(total_loss), (jnp.mean(total_loss), loss_dict)
+
+    (_, (mean_loss, loss_dict)), grads = eqx.filter_value_and_grad(
+        loss_fn, has_aux=True)(model.model)
+
+    # Replace NaNs with small gradient (matches TF: tf.where(is_nan, 1e-8, g))
+    grads = jax.tree_util.tree_map(
+        lambda g: jnp.where(jnp.isnan(g), jnp.full_like(g, 1e-8), g),
+        grads)
+
+    # Global norm clipping  (matches TF: tf.clip_by_global_norm)
+    leaves, treedef = jax.tree_util.tree_flatten(grads)
+    global_norm = jnp.sqrt(
+        sum(jnp.sum(g ** 2) for g in leaves) + 1e-12)
+    clip_factor = jnp.minimum(1.0, model.gclipping / global_norm)
+    grads = jax.tree_util.tree_unflatten(
+        treedef, [g * clip_factor for g in leaves])
+
+    updates, new_opt_state = optimizer.update(grads, opt_state,
+                                              eqx.filter(model.model, eqx.is_array))
+    new_nn = eqx.apply_updates(model.model, updates)
+    new_model = eqx.tree_at(lambda m: m.model, model, new_nn)
+    return new_model, new_opt_state, mean_loss, loss_dict
+
+
 def _make_train_step(optimizer):
     r"""Returns a JIT-compiled single training-step function.
-
-    The returned function differentiates ONLY through the NN backbone
-    (``model.model``), matching TF's ``trainable_variables = model.model.trainable_variables``.
 
     Args:
         optimizer (optax.GradientTransformation): An optax optimizer.
@@ -69,42 +124,167 @@ def _make_train_step(optimizer):
 
     @eqx.filter_jit
     def train_step(model, opt_state, x, y, sample_weight=None, pb=None):
-        def loss_fn(nn_model):
-            # Reconstruct the full model with the candidate NN
-            full_model = eqx.tree_at(lambda m: m.model, model, nn_model)
-            total_loss, loss_dict = full_model.compute_loss(x, y, sample_weight, pb=pb)
-            # Sum (not mean) over the batch for the gradient target: TF's
-            # tape.gradient(total_loss, ...) on a non-scalar [bSize] target
-            # implicitly uses output_gradients=ones_like(total_loss), i.e. it
-            # differentiates sum(total_loss). Matching that here keeps the
-            # raw gradient magnitude (and hence gclipping's effect) the same
-            # scale as TF; using mean() shrinks gradients by batch_size and
-            # makes gclipping's global-norm clip rarely engage.
-            return jnp.sum(total_loss), (jnp.mean(total_loss), loss_dict)
-
-        (_, (mean_loss, loss_dict)), grads = eqx.filter_value_and_grad(
-            loss_fn, has_aux=True)(model.model)
-
-        # Replace NaNs with small gradient (matches TF: tf.where(is_nan, 1e-8, g))
-        grads = jax.tree_util.tree_map(
-            lambda g: jnp.where(jnp.isnan(g), jnp.full_like(g, 1e-8), g),
-            grads)
-
-        # Global norm clipping  (matches TF: tf.clip_by_global_norm)
-        leaves, treedef = jax.tree_util.tree_flatten(grads)
-        global_norm = jnp.sqrt(
-            sum(jnp.sum(g ** 2) for g in leaves) + 1e-12)
-        clip_factor = jnp.minimum(1.0, model.gclipping / global_norm)
-        grads = jax.tree_util.tree_unflatten(
-            treedef, [g * clip_factor for g in leaves])
-
-        updates, new_opt_state = optimizer.update(grads, opt_state,
-                                                  eqx.filter(model.model, eqx.is_array))
-        new_nn = eqx.apply_updates(model.model, updates)
-        new_model = eqx.tree_at(lambda m: m.model, model, new_nn)
-        return new_model, new_opt_state, mean_loss, loss_dict
+        return _train_step(model, opt_state, x, y, sample_weight, pb, optimizer)
 
     return train_step
+
+
+# ---------------------------------------------------------------------------
+# One whole phase of an epoch, on the device
+# ---------------------------------------------------------------------------
+
+def _phase_batching(n_train, batch_size):
+    r"""Splits a phase into equal-shaped batches plus a ragged last one.
+
+    The host loop took ``range(0, n_train, batch_size)`` and clipped the last
+    slice, so a phase is ``n_train // batch_size`` batches of exactly
+    ``batch_size`` points and, when ``n_train`` is not a multiple of it, one
+    shorter batch.  The short batch cannot join the scan -- its shape differs,
+    and padding it would change the summed gradient it contributes and the mean
+    loss it reports -- so it runs as one extra step inside the same program.
+
+    Args:
+        n_train (int): number of training points.
+        batch_size (int): the phase's batch size.
+
+    Returns:
+        tuple: ``(n_full, tail)``, with ``n_full * batch_size + tail ==
+        n_train`` and ``0 <= tail < batch_size``.
+    """
+    n_full = n_train // batch_size
+    return n_full, n_train - n_full * batch_size
+
+
+def _make_phase_runner(optimizer, batch_size, collect_batches=False):
+    r"""Returns a jitted function that runs one whole phase of an epoch.
+
+    The phase is a ``lax.scan`` over the batch axis, carrying the NN
+    parameters, the optimizer state and the running loss sum, so the Python
+    interpreter sees one dispatch per phase instead of one per batch.  Only the
+    network parameters are carried: the rest of the model (BASIS, the patch
+    tables, kappa) is a free variable of the enclosing jitted function and so a
+    loop-invariant operand of the scan rather than something copied on every
+    iteration.
+
+    The returned function is built once per phase, outside the epoch loop, and
+    called once per epoch; the ``learn_*`` flags are static on an
+    ``eqx.Module``, so the two phases are two programs and each compiles once
+    for a whole run.
+
+    Args:
+        optimizer (optax.GradientTransformation): An optax optimizer.
+        batch_size (int): the phase's batch size (static: it is part of the
+            compiled shapes).
+        collect_batches (bool): If True, also stack the per-batch loss
+            components, mean losses and sample weights, which is what custom
+            metrics need.  They cost device memory proportional to the number
+            of steps, so they are only collected when there are metrics to
+            feed.  Defaults to False.
+
+    Returns:
+        callable: ``run_phase(model, opt_state, sx, sy, spb, ssw)`` returning
+        ``(model, opt_state, loss_sum, last_component_means, scanned, tailed)``
+        on already-shuffled arrays.  ``scanned`` and ``tailed`` are None unless
+        ``collect_batches``; ``loss_sum`` is the sum over batches of the
+        per-batch mean loss, accumulated in the scan carry so that the
+        summation order is the host loop's.
+    """
+
+    @eqx.filter_jit
+    def run_phase(model, opt_state, sx, sy, spb, ssw):
+        n_train = sx.shape[0]
+        n_full, tail = _phase_batching(n_train, batch_size)
+
+        nn_params, nn_static = eqx.partition(model.model, eqx.is_array)
+
+        def rebuild(params):
+            return eqx.tree_at(lambda m: m.model, model,
+                               eqx.combine(params, nn_static))
+
+        def one_step(carry, batch):
+            params, state, loss_sum = carry
+            bx, by, bpb, bsw = batch
+            new_model, new_state, loss, parts = _train_step(
+                rebuild(params), state, bx, by, bsw, bpb, optimizer)
+            new_params, _ = eqx.partition(new_model.model, eqx.is_array)
+            out = {'means': {k: jnp.mean(v) for k, v in parts.items()}}
+            if collect_batches:
+                out['loss'] = loss
+                out['parts'] = parts
+                if bsw is not None:
+                    out['sample_weight'] = bsw
+            return (new_params, new_state, loss_sum + loss), out
+
+        carry = (nn_params, opt_state, jnp.zeros((), dtype=real_dtype()))
+
+        scanned = None
+        if n_full > 0:
+            def chop(a):
+                return a[:n_full * batch_size].reshape(
+                    (n_full, batch_size) + a.shape[1:])
+            carry, scanned = jax.lax.scan(
+                one_step, carry,
+                (chop(sx), chop(sy), chop(spb),
+                 None if ssw is None else chop(ssw)))
+
+        tailed = None
+        if tail > 0:
+            start = n_full * batch_size
+            carry, tailed = one_step(
+                carry, (sx[start:], sy[start:], spb[start:],
+                        None if ssw is None else ssw[start:]))
+
+        params, new_opt_state, loss_sum = carry
+        # The history records the component losses of the LAST batch of the
+        # phase, which is the ragged one when there is one.
+        if tail > 0:
+            last = tailed['means']
+        else:
+            last = jax.tree_util.tree_map(lambda a: a[-1], scanned['means'])
+        return rebuild(params), new_opt_state, loss_sum, last, scanned, tailed
+
+    return run_phase
+
+
+def _replay_metrics(custom_metrics, scanned, tailed, n_full):
+    r"""Feeds the per-batch losses of a finished phase to the custom metrics.
+
+    ``metrics._RunningMean.update_state`` is host-side Python with a
+    ``float()`` in it, so it cannot run inside the scan.  The values it needs
+    are per-batch and known once the phase has run, so the phase stacks them
+    and they are replayed here in batch order: the running means come out
+    bit-identical to the host loop's, and no device dispatch happens per step.
+
+    Args:
+        custom_metrics (list): metric objects (see metrics.py). Empty is a
+            no-op, and then the phase does not collect anything either.
+        scanned (dict or None): the stacked outputs of the scanned batches.
+        tailed (dict or None): the outputs of the ragged last batch.
+        n_full (int): number of scanned batches.
+    """
+    if not custom_metrics:
+        return
+
+    def host(tree):
+        return jax.tree_util.tree_map(np.asarray, tree)
+
+    steps = []
+    if scanned is not None:
+        s = host(scanned)
+        for i in range(n_full):
+            steps.append(({k: v[i] for k, v in s['parts'].items()},
+                          s['loss'][i],
+                          s['sample_weight'][i] if 'sample_weight' in s
+                          else None))
+    if tailed is not None:
+        t = host(tailed)
+        steps.append((dict(t['parts']), t['loss'], t.get('sample_weight')))
+
+    for parts, loss_val, bsw in steps:
+        loss_dict = dict(parts)
+        loss_dict['loss'] = jnp.array([loss_val])
+        for m in custom_metrics:
+            m.update_state(loss_dict, bsw)
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +312,27 @@ def _shuffled(X, y, pullbacks, sample_weights, n_train):
             None if sample_weights is None else sample_weights[perm])
 
 
+def _with_flags(model, kaehler, transition, ricci, ricci_val, volk):
+    r"""Returns MODEL with the five ``learn_*`` flags set to these values.
+
+    They are static fields, so this is what selects which loss terms the
+    phase's program contains.
+
+    Args:
+        model: a JAX FreeModel (or subclass) instance.
+        kaehler, transition, ricci, ricci_val, volk (bool): the flags.
+
+    Returns:
+        the model with the flags replaced.
+    """
+    model = eqx.tree_at(lambda m: m.learn_kaehler, model, kaehler)
+    model = eqx.tree_at(lambda m: m.learn_transition, model, transition)
+    model = eqx.tree_at(lambda m: m.learn_ricci, model, ricci)
+    model = eqx.tree_at(lambda m: m.learn_ricci_val, model, ricci_val)
+    model = eqx.tree_at(lambda m: m.learn_volk, model, volk)
+    return model
+
+
 def train_model(fsmodel, data, optimizer=None, epochs=50,
                 batch_sizes=(64, 10000), verbose=1,
                 custom_metrics=None, callbacks=None, sw=False,
@@ -142,6 +343,13 @@ def train_model(fsmodel, data, optimizer=None, epochs=50,
 
     Phase 1: small batch, volk loss disabled.
     Phase 2: large batch, only MA + volk loss.
+
+    Each phase of each epoch is one jitted program that scans over the phase's
+    batches (:func:`_make_phase_runner`), so the Python interpreter sees a
+    handful of dispatches per epoch rather than one per batch.  Callbacks and
+    the custom metrics are unchanged: callbacks already ran at epoch
+    granularity, and the metrics' per-batch running means are replayed from the
+    phase's stacked outputs (:func:`_replay_metrics`).
 
     Args:
         fsmodel: Any JAX FreeModel (or subclass) instance.
@@ -204,100 +412,71 @@ def train_model(fsmodel, data, optimizer=None, epochs=50,
     hist1, hist2 = {}, {}
     n_train = len(X_train)
 
-    # Build the jitted step once, outside the loop. Rebuilding it each epoch
-    # made XLA recompile and retain an executable per epoch, which leaked
-    # memory on long runs.
-    train_step = _make_train_step(optimizer)
+    # Build both phases' programs once, outside the epoch loop.  Rebuilding
+    # them per epoch made XLA recompile and retain an executable per epoch,
+    # which leaked memory on long runs.
+    batch_size1 = batch_sizes[0]
+    batch_size2 = min(batch_sizes[1], n_train)
+    n_full1, tail1 = _phase_batching(n_train, batch_size1)
+    n_full2, tail2 = _phase_batching(n_train, batch_size2)
+    num_batches1 = n_full1 + (1 if tail1 else 0)
+    num_batches2 = n_full2 + (1 if tail2 else 0)
+    want_batches = bool(custom_metrics)
+    run_phase1 = _make_phase_runner(optimizer, batch_size1, want_batches)
+    run_phase2 = _make_phase_runner(optimizer, batch_size2, want_batches)
 
-    for epoch in range(epochs):
+    epoch_it = range(epochs)
+    if HAS_TQDM and verbose > 0:
+        epoch_it = tqdm.tqdm(epoch_it)
+
+    for epoch in epoch_it:
         if verbose > 0:
             print('\nEpoch {:2d}/{:d}'.format(epoch + 1, epochs))
 
         # ---- Phase 1: small batch, volk disabled ----
-        fsmodel = eqx.tree_at(lambda m: m.learn_kaehler,   fsmodel, learn_kaehler)
-        fsmodel = eqx.tree_at(lambda m: m.learn_transition, fsmodel, learn_transition)
-        fsmodel = eqx.tree_at(lambda m: m.learn_ricci,     fsmodel, learn_ricci)
-        fsmodel = eqx.tree_at(lambda m: m.learn_ricci_val, fsmodel, learn_ricci_val)
-        fsmodel = eqx.tree_at(lambda m: m.learn_volk,      fsmodel, False)
+        fsmodel = _with_flags(fsmodel, learn_kaehler, learn_transition,
+                              learn_ricci, learn_ricci_val, False)
 
-        batch_size1 = batch_sizes[0]
-        epoch_loss1 = 0.
-        num_batches1 = 0
-        # Shuffle once on the device and then take contiguous slices.  A
-        # numpy fancy-index gather per batch (the former
-        # X_train[indices[start:end]]) copies the indices to the device and
-        # launches a gather for each of X, y and the pullbacks: 1.6 ms on top
-        # of a 0.9 ms step at batch 64 on an RTX 5090, i.e. most of an epoch.
-        # The batches themselves are unchanged -- same permutation, same
-        # grouping -- so the trajectory is the same.
+        # Shuffle once and then take contiguous slices.  A numpy fancy-index
+        # gather per batch (the former X_train[indices[start:end]]) copied the
+        # indices to the device and launched a gather for each of X, y and the
+        # pullbacks: 1.6 ms on top of a 0.9 ms step at batch 64 on an RTX
+        # 5090, i.e. most of an epoch.  The batches themselves are unchanged
+        # -- same permutation, same grouping -- so the trajectory is the same.
         sx, sy, spb, ssw = _shuffled(
             X_train, y_train, train_pullbacks, sample_weights, n_train)
+        fsmodel, opt_state, loss_sum1, last1, scanned, tailed = run_phase1(
+            fsmodel, opt_state, sx, sy, spb, ssw)
+        _replay_metrics(custom_metrics, scanned, tailed, n_full1)
 
-        it1 = range(0, n_train, batch_size1)
-        if HAS_TQDM and verbose > 0:
-            it1 = tqdm.tqdm(it1)
-        for start in it1:
-            end = min(start + batch_size1, n_train)
-            bx, by, bpb = sx[start:end], sy[start:end], spb[start:end]
-            bsw = ssw[start:end] if ssw is not None else None
-            fsmodel, opt_state, loss_val, loss_components = train_step(
-                fsmodel, opt_state, bx, by, bsw, bpb)
-            epoch_loss1 += loss_val
-            num_batches1 += 1
-            # Update custom metrics
-            if custom_metrics:
-                loss_dict = {k: v for k, v in loss_components.items()}
-                loss_dict['loss'] = jnp.array([loss_val])
-                for m in custom_metrics:
-                    m.update_state(loss_dict, bsw)
-
-        avg_loss1 = epoch_loss1 / max(num_batches1, 1)
+        avg_loss1 = loss_sum1 / max(num_batches1, 1)
         training_history['General loss phase'].append(float(avg_loss1))
-        for k, v in (loss_components or {}).items():
+        for k, v in last1.items():
             if k not in hist1:
                 hist1[k] = []
-            hist1[k].append(float(jnp.mean(v)))
+            hist1[k].append(float(v))
 
         # ---- Phase 2: large batch, only MA + volk ----
-        fsmodel = eqx.tree_at(lambda m: m.learn_kaehler,   fsmodel, False)
-        fsmodel = eqx.tree_at(lambda m: m.learn_transition, fsmodel, False)
-        fsmodel = eqx.tree_at(lambda m: m.learn_ricci,     fsmodel, False)
-        fsmodel = eqx.tree_at(lambda m: m.learn_ricci_val, fsmodel, False)
-        fsmodel = eqx.tree_at(lambda m: m.learn_volk,      fsmodel, True)
+        fsmodel = _with_flags(fsmodel, False, False, False, False, True)
 
-        batch_size2 = min(batch_sizes[1], n_train)
-        epoch_loss2 = 0.
-        num_batches2 = 0
         sx, sy, spb, ssw = _shuffled(
             X_train, y_train, train_pullbacks, sample_weights, n_train)
+        fsmodel, opt_state, loss_sum2, last2, scanned, tailed = run_phase2(
+            fsmodel, opt_state, sx, sy, spb, ssw)
+        _replay_metrics(custom_metrics, scanned, tailed, n_full2)
 
-        it2 = range(0, n_train, batch_size2)
-        if HAS_TQDM and verbose > 0:
-            it2 = tqdm.tqdm(it2)
-        for start in it2:
-            end = min(start + batch_size2, n_train)
-            bx, by, bpb = sx[start:end], sy[start:end], spb[start:end]
-            bsw = ssw[start:end] if ssw is not None else None
-            fsmodel, opt_state, loss_val, loss_components = train_step(
-                fsmodel, opt_state, bx, by, bsw, bpb)
-            epoch_loss2 += loss_val
-            num_batches2 += 1
-            if custom_metrics:
-                loss_dict = {k: v for k, v in loss_components.items()}
-                loss_dict['loss'] = jnp.array([loss_val])
-                for m in custom_metrics:
-                    m.update_state(loss_dict, bsw)
-
-        avg_loss2 = epoch_loss2 / max(num_batches2, 1)
+        avg_loss2 = loss_sum2 / max(num_batches2, 1)
         training_history['Volume loss phase'].append(float(avg_loss2))
-        for k, v in (loss_components or {}).items():
+        for k, v in last2.items():
             if k not in hist2:
                 hist2[k] = []
-            hist2[k].append(float(jnp.mean(v)))
+            hist2[k].append(float(v))
 
         if verbose > 0:
-            print(' - General loss phase: {:.6f}'.format(avg_loss1))
-            print(' - Volume loss phase:  {:.6f}'.format(avg_loss2))
+            print(' - General loss phase: {:.6f}'.format(
+                training_history['General loss phase'][-1]))
+            print(' - Volume loss phase:  {:.6f}'.format(
+                training_history['Volume loss phase'][-1]))
 
         # Run epoch-end callbacks.
         # Use a per-epoch dict so callback scalars are accumulated into lists
@@ -312,11 +491,8 @@ def train_model(fsmodel, data, optimizer=None, epochs=50,
             training_history[k].append(v)
 
     # Restore flags
-    fsmodel = eqx.tree_at(lambda m: m.learn_kaehler,   fsmodel, learn_kaehler)
-    fsmodel = eqx.tree_at(lambda m: m.learn_transition, fsmodel, learn_transition)
-    fsmodel = eqx.tree_at(lambda m: m.learn_ricci,     fsmodel, learn_ricci)
-    fsmodel = eqx.tree_at(lambda m: m.learn_ricci_val, fsmodel, learn_ricci_val)
-    fsmodel = eqx.tree_at(lambda m: m.learn_volk,      fsmodel, False)
+    fsmodel = _with_flags(fsmodel, learn_kaehler, learn_transition,
+                          learn_ricci, learn_ricci_val, False)
 
     # Merge histories (matches TF helper logic)
     for k in set(list(hist1.keys()) + list(hist2.keys())):
