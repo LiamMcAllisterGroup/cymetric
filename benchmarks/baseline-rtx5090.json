@@ -1,0 +1,1806 @@
+{
+ "provenance": {
+  "argv": [
+   "benchmarks/bench.py",
+   "--out",
+   "benchmarks/baseline-rtx5090.json",
+   "--timeout",
+   "900"
+  ],
+  "cpu_count": 24,
+  "device": {
+   "cuda_visible_devices": "0",
+   "jax_device_count": 1,
+   "jax_device_kind": "NVIDIA GeForce RTX 5090",
+   "jax_platform": "gpu",
+   "xla_python_client_preallocate": "false"
+  },
+  "forced_cpu": false,
+  "git": {
+   "branch": "bench-baseline",
+   "commit": "eba230404230d2eb5f9d0ccc3bb37386d27b568e",
+   "commit_subject": "benchmarks: baseline for upstream be772af on the RTX 5060 Ti, and the h11 curve",
+   "dirty_files": 0,
+   "library_dirty_files": [],
+   "library_is_pristine": true,
+   "repo_root": "/home/nate/github/cymetric-bench"
+  },
+  "gpus_visible_to_nvidia_smi": [
+   "0, NVIDIA GeForce RTX 5090, 32607 MiB, 595.99.02",
+   "1, NVIDIA GeForce RTX 5060 Ti, 16311 MiB, 595.99.02"
+  ],
+  "host": "compute02",
+  "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+  "python": "3.12.15",
+  "quick": false,
+  "timestamp_utc": "2026-10-20T16:38:17Z",
+  "versions": {
+   "cymetric": "0.4.0",
+   "cymetric_file": "/home/nate/github/cymetric-bench/cymetric/__init__.py",
+   "equinox": "0.13.8",
+   "jax": "0.12.0",
+   "jaxlib": "0.12.0",
+   "joblib": "1.6.0",
+   "numpy": "2.5.4",
+   "optax": "0.2.8",
+   "scipy": "1.18.1",
+   "sympy": "1.14.0",
+   "torch": "2.14.1+cu130"
+  }
+ },
+ "records": [
+  {
+   "derived": {
+    "points_per_s": 175577.3087470651,
+    "us_per_point": 5.695496799307875
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "pointgen",
+   "headline": "175577 points/s",
+   "host_peak_rss_mb": 1002.2,
+   "info": {
+    "n_monomials": 5,
+    "n_projective": 1,
+    "ncoords": 5,
+    "nfold": 3,
+    "note": "the first call also pays joblib worker start-up"
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "pointgen.quintic.points",
+   "params": {
+    "geometry": "quintic",
+    "method": "points",
+    "n_points": 20000,
+    "nproc": 4
+   },
+   "repeats_requested": 5,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 4.057319846681068,
+    "first_call_s": 0.46216904401080683,
+    "max_s": 0.11600786601775326,
+    "median_s": 0.1139099359861575,
+    "min_s": 0.11112482199678198,
+    "p25_s": 0.11212746700039133,
+    "p75_s": 0.11395241899299435,
+    "repeats": 5,
+    "samples_s": [
+     0.1139099359861575,
+     0.11112482199678198,
+     0.11395241899299435,
+     0.11212746700039133,
+     0.11600786601775326
+    ]
+   },
+   "wall_s": 1.2892495790147223,
+   "what": "CICY line-intersection sampler, points only (Fermat quintic, h11=1)"
+  },
+  {
+   "derived": {
+    "points_per_s": 52634.51927909512,
+    "us_per_point": 18.99893859954318
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "pointgen",
+   "headline": "52635 points/s",
+   "host_peak_rss_mb": 1002.2,
+   "info": {
+    "n_monomials": 5,
+    "n_projective": 1,
+    "ncoords": 5,
+    "nfold": 3,
+    "note": "the first call also pays joblib worker start-up"
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "pointgen.quintic.weights",
+   "params": {
+    "geometry": "quintic",
+    "method": "weights",
+    "n_points": 20000,
+    "nproc": 4
+   },
+   "repeats_requested": 5,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 2.149737249064063,
+    "first_call_s": 0.81685452000238,
+    "max_s": 0.4631210939842276,
+    "median_s": 0.3799787719908636,
+    "min_s": 0.37233321901294403,
+    "p25_s": 0.37267574801808223,
+    "p75_s": 0.3909657249751035,
+    "repeats": 5,
+    "samples_s": [
+     0.3799787719908636,
+     0.3909657249751035,
+     0.4631210939842276,
+     0.37233321901294403,
+     0.37267574801808223
+    ]
+   },
+   "wall_s": 3.059569723001914,
+   "what": "CICY sampler incl. weights and Omega, i.e. prepare_dataset cost"
+  },
+  {
+   "derived": {
+    "points_per_s": 4250.212979252935,
+    "us_per_point": 235.282326999004
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "pointgen",
+   "headline": "4250 points/s",
+   "host_peak_rss_mb": 1002.2,
+   "info": {
+    "n_monomials": 126,
+    "n_projective": 1,
+    "ncoords": 5,
+    "nfold": 3,
+    "note": "the first call also pays joblib worker start-up"
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "pointgen.quintic_dense.points",
+   "params": {
+    "geometry": "quintic_dense",
+    "method": "points",
+    "n_points": 20000,
+    "nproc": 4
+   },
+   "repeats_requested": 3,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 1.1724180331271137,
+    "first_call_s": 5.516984860994853,
+    "max_s": 4.717958015011391,
+    "median_s": 4.70564653998008,
+    "min_s": 4.648101945000235,
+    "p25_s": 4.6768742424901575,
+    "p75_s": 4.711802277495735,
+    "repeats": 3,
+    "samples_s": [
+     4.648101945000235,
+     4.717958015011391,
+     4.70564653998008
+    ]
+   },
+   "wall_s": 20.76672629400855,
+   "what": "same P^4, dense quintic (126 monomials): the monomial-count axis"
+  },
+  {
+   "derived": {
+    "points_per_s": 703.3525179638796,
+    "us_per_point": 1421.7621668503853
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "pointgen",
+   "headline": "703 points/s",
+   "host_peak_rss_mb": 1002.2,
+   "info": {
+    "n_monomials": 126,
+    "n_projective": 1,
+    "ncoords": 5,
+    "nfold": 3,
+    "note": "the first call also pays joblib worker start-up"
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "pointgen.quintic_dense.weights",
+   "params": {
+    "geometry": "quintic_dense",
+    "method": "weights",
+    "n_points": 20000,
+    "nproc": 4
+   },
+   "repeats_requested": 3,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 1.009663400194297,
+    "first_call_s": 28.71002447299543,
+    "max_s": 28.474155181000242,
+    "median_s": 28.435243337007705,
+    "min_s": 27.94292297301581,
+    "p25_s": 28.189083155011758,
+    "p75_s": 28.454699259003974,
+    "repeats": 3,
+    "samples_s": [
+     28.435243337007705,
+     28.474155181000242,
+     27.94292297301581
+    ]
+   },
+   "wall_s": 114.78458921398851,
+   "what": "dense quintic, weights and Omega"
+  },
+  {
+   "derived": {
+    "points_per_s": 11548.161509919886,
+    "us_per_point": 86.59387030056678
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "pointgen",
+   "headline": "11548 points/s",
+   "host_peak_rss_mb": 1002.4,
+   "info": {
+    "n_monomials": 100,
+    "n_projective": 2,
+    "ncoords": 6,
+    "nfold": 3,
+    "note": "the first call also pays joblib worker start-up"
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "pointgen.bicubic.points",
+   "params": {
+    "geometry": "bicubic",
+    "method": "points",
+    "n_points": 20000,
+    "nproc": 4
+   },
+   "repeats_requested": 3,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 1.5297500428179076,
+    "first_call_s": 2.6493395360012073,
+    "max_s": 1.7425031550228596,
+    "median_s": 1.7318774060113356,
+    "min_s": 1.7153512840159237,
+    "p25_s": 1.7236143450136296,
+    "p75_s": 1.7371902805170976,
+    "repeats": 3,
+    "samples_s": [
+     1.7318774060113356,
+     1.7153512840159237,
+     1.7425031550228596
+    ]
+   },
+   "wall_s": 8.453309976990568,
+   "what": "CICY sampler, points only, P^2xP^2 (h11=2)"
+  },
+  {
+   "derived": {
+    "points_per_s": 3621.2576686357856,
+    "us_per_point": 276.1471542500658
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "pointgen",
+   "headline": "3621 points/s",
+   "host_peak_rss_mb": 1002.4,
+   "info": {
+    "n_monomials": 100,
+    "n_projective": 2,
+    "ncoords": 6,
+    "nfold": 3,
+    "note": "the first call also pays joblib worker start-up"
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "pointgen.bicubic.weights",
+   "params": {
+    "geometry": "bicubic",
+    "method": "weights",
+    "n_points": 20000,
+    "nproc": 4
+   },
+   "repeats_requested": 3,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 1.171630977435065,
+    "first_call_s": 6.470851204998326,
+    "max_s": 5.524006178980926,
+    "median_s": 5.522943085001316,
+    "min_s": 5.506767445011064,
+    "p25_s": 5.51485526500619,
+    "p75_s": 5.523474631991121,
+    "repeats": 3,
+    "samples_s": [
+     5.524006178980926,
+     5.506767445011064,
+     5.522943085001316
+    ]
+   },
+   "wall_s": 23.65043959498871,
+   "what": "CICY sampler incl. weights and Omega, P^2xP^2 (h11=2)"
+  },
+  {
+   "derived": {
+    "points_per_s": 10416.739643479072,
+    "us_per_point": 95.9993274504086
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "pointgen",
+   "headline": "10417 points/s",
+   "host_peak_rss_mb": 1002.4,
+   "info": {
+    "n_monomials": 81,
+    "n_projective": 4,
+    "ncoords": 8,
+    "nfold": 3,
+    "note": "the first call also pays joblib worker start-up"
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "pointgen.tetraquadric.points",
+   "params": {
+    "geometry": "tetraquadric",
+    "method": "points",
+    "n_points": 20000,
+    "nproc": 4
+   },
+   "repeats_requested": 3,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 1.5790330758251454,
+    "first_call_s": 3.03172226602328,
+    "max_s": 1.920620773016708,
+    "median_s": 1.919986549008172,
+    "min_s": 1.8959355289989617,
+    "p25_s": 1.9079610390035668,
+    "p75_s": 1.92030366101244,
+    "repeats": 3,
+    "samples_s": [
+     1.920620773016708,
+     1.8959355289989617,
+     1.919986549008172
+    ]
+   },
+   "wall_s": 9.249690433993237,
+   "what": "CICY sampler, points only, (P^1)^4 (h11=4)"
+  },
+  {
+   "derived": {
+    "points_per_s": 2841.499542804076,
+    "us_per_point": 351.92685585061554
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "pointgen",
+   "headline": "2841 points/s",
+   "host_peak_rss_mb": 1366.6,
+   "info": {
+    "n_monomials": 81,
+    "n_projective": 4,
+    "ncoords": 8,
+    "nfold": 3,
+    "note": "the first call also pays joblib worker start-up"
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "pointgen.tetraquadric.weights",
+   "params": {
+    "geometry": "tetraquadric",
+    "method": "weights",
+    "n_points": 20000,
+    "nproc": 4
+   },
+   "repeats_requested": 3,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 1.1452109461098026,
+    "first_call_s": 8.06060975100263,
+    "max_s": 7.042118843994103,
+    "median_s": 7.038537117012311,
+    "min_s": 7.013107879000017,
+    "p25_s": 7.025822498006164,
+    "p75_s": 7.040327980503207,
+    "repeats": 3,
+    "samples_s": [
+     7.042118843994103,
+     7.038537117012311,
+     7.013107879000017
+    ]
+   },
+   "wall_s": 29.6411409600114,
+   "what": "CICY sampler incl. weights and Omega, (P^1)^4 (h11=4)"
+  },
+  {
+   "derived": {
+    "ms_per_point": 9.524674317988683,
+    "points_per_s": 104.99046650984798
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "pointgen",
+   "headline": "105 points/s",
+   "host_peak_rss_mb": 1002.4,
+   "info": {
+    "h11": 1,
+    "includes_auto_tuning": true,
+    "n_kaehler_cone_generators": 1,
+    "n_monomials": 126,
+    "n_patches": 5,
+    "n_sections_total": 5,
+    "ncoords": 5
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "pointgen.toric.h11_1",
+   "params": {
+    "h11": 1,
+    "n_points": 2000
+   },
+   "repeats_requested": 3,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 0.9865832302270432,
+    "first_call_s": 18.79376791100367,
+    "max_s": 19.100317192991497,
+    "median_s": 19.049348635977367,
+    "min_s": 18.958099762996426,
+    "p25_s": 19.003724199486896,
+    "p75_s": 19.074832914484432,
+    "repeats": 3,
+    "samples_s": [
+     19.049348635977367,
+     19.100317192991497,
+     18.958099762996426
+    ]
+   },
+   "wall_s": 76.18195648601977,
+   "what": "toric Metropolis sampler on a KS hypersurface, h11=1"
+  },
+  {
+   "derived": {
+    "ms_per_point": 4.720164543992723,
+    "points_per_s": 211.8570212287798
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "pointgen",
+   "headline": "212 points/s",
+   "host_peak_rss_mb": 1002.4,
+   "info": {
+    "h11": 5,
+    "includes_auto_tuning": true,
+    "n_kaehler_cone_generators": 6,
+    "n_monomials": 50,
+    "n_patches": 20,
+    "n_sections_total": 17,
+    "ncoords": 9
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "pointgen.toric.h11_5",
+   "params": {
+    "h11": 5,
+    "n_points": 2000
+   },
+   "repeats_requested": 3,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 1.004431022013083,
+    "first_call_s": 9.482159393985057,
+    "max_s": 9.479984120989684,
+    "median_s": 9.440329087985447,
+    "min_s": 9.389079390995903,
+    "p25_s": 9.414704239490675,
+    "p75_s": 9.460156604487565,
+    "repeats": 3,
+    "samples_s": [
+     9.479984120989684,
+     9.389079390995903,
+     9.440329087985447
+    ]
+   },
+   "wall_s": 38.0586777869903,
+   "what": "toric Metropolis sampler on a KS hypersurface, h11=5"
+  },
+  {
+   "derived": {
+    "ms_per_point": 7.505375910026487,
+    "points_per_s": 133.23783005513323
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "pointgen",
+   "headline": "133 points/s",
+   "host_peak_rss_mb": 1002.4,
+   "info": {
+    "h11": 5,
+    "includes_auto_tuning": true,
+    "n_kaehler_cone_generators": 6,
+    "n_monomials": 50,
+    "n_patches": 20,
+    "n_sections_total": 17,
+    "ncoords": 9
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "pointgen.toric.h11_5.n500",
+   "params": {
+    "h11": 5,
+    "n_points": 500
+   },
+   "repeats_requested": 3,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 1.0020917422608353,
+    "first_call_s": 3.7605376110004727,
+    "max_s": 3.758425031992374,
+    "median_s": 3.7526879550132435,
+    "min_s": 3.7361393610190134,
+    "p25_s": 3.7444136580161285,
+    "p75_s": 3.7555564935028087,
+    "repeats": 3,
+    "samples_s": [
+     3.7361393610190134,
+     3.758425031992374,
+     3.7526879550132435
+    ]
+   },
+   "wall_s": 15.2820654620009,
+   "what": "same geometry at n_p=500: exposes the per-call auto-tuning cost"
+  },
+  {
+   "derived": {
+    "ms_per_point": 10.747590654500527,
+    "points_per_s": 93.04410934010149
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "pointgen",
+   "headline": "93 points/s",
+   "host_peak_rss_mb": 1002.4,
+   "info": {
+    "h11": 10,
+    "includes_auto_tuning": true,
+    "n_kaehler_cone_generators": 12,
+    "n_monomials": 29,
+    "n_patches": 48,
+    "n_sections_total": 39,
+    "ncoords": 14
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "pointgen.toric.h11_10",
+   "params": {
+    "h11": 10,
+    "n_points": 2000
+   },
+   "repeats_requested": 3,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 0.9981077909779815,
+    "first_call_s": 21.45450793299824,
+    "max_s": 21.57134610999492,
+    "median_s": 21.495181309001055,
+    "min_s": 21.461627570999553,
+    "p25_s": 21.478404440000304,
+    "p75_s": 21.533263709497987,
+    "repeats": 3,
+    "samples_s": [
+     21.57134610999492,
+     21.461627570999553,
+     21.495181309001055
+    ]
+   },
+   "wall_s": 86.24522839701967,
+   "what": "toric Metropolis sampler on a KS hypersurface, h11=10"
+  },
+  {
+   "derived": {
+    "block_steps": 32,
+    "compile_s": 3.6601760019839276,
+    "ms_per_step_median": 0.9087029902730137,
+    "ms_per_step_pipelined": 0.713894593900477,
+    "points_per_s": 89649.08902072754,
+    "s_per_epoch_est": 0.20060438088603405,
+    "steps_per_epoch": 281
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "train_jax",
+   "headline": "0.91 ms/step, 0.20 s/epoch (281 steps)",
+   "host_peak_rss_mb": 1595.3,
+   "info": {
+    "batch_size": 64,
+    "final_loss": 0.43126124143600464,
+    "geometry": "quintic",
+    "model": "PhiFSModel",
+    "n_projective": 1,
+    "n_train": 18000,
+    "ncoords": 5,
+    "nfold": 3
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 208142336,
+    "peak_mb": 198.5
+   },
+   "name": "train_jax.quintic.bs64",
+   "params": {
+    "batch_size": 64,
+    "geometry": "quintic",
+    "n_points": 20000
+   },
+   "repeats_requested": 30,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 4027.9123554817975,
+    "first_call_s": 3.6601760019839276,
+    "max_s": 0.0015379370015580207,
+    "median_s": 0.0009087029902730137,
+    "min_s": 0.0006113609997555614,
+    "p25_s": 0.000781043003371451,
+    "p75_s": 0.0009903812606353313,
+    "repeats": 30,
+    "samples_s": [
+     0.0015379370015580207,
+     0.0009471969970036298,
+     0.0009293209877796471,
+     0.0008224939811043441,
+     0.0010046600073110312,
+     0.001113558013457805,
+     0.0010310049983672798,
+     0.0010722049919422716,
+     0.0009232239972334355,
+     0.001087403012206778,
+     0.0010431580012664199,
+     0.0008726929954718798,
+     0.0006976099975872785,
+     0.0006373630021698773,
+     0.0009475450206082314,
+     0.0010993519972544163,
+     0.0008781699871178716,
+     0.0009313439950346947,
+     0.0008310569974128157,
+     0.0008941819833125919,
+     0.0008250800019595772,
+     0.0009274740004912019,
+     0.0009450629877392203,
+     0.0008835170010570437,
+     0.0006707920110784471,
+     0.0007336810231208801,
+     0.0007663599972147495,
+     0.0006113609997555614,
+     0.0006997680175118148,
+     0.00076722601079382
+    ]
+   },
+   "wall_s": 5.4890796759864315,
+   "what": "PhiFSModel training step, quintic, small batch (phase-1 default)"
+  },
+  {
+   "derived": {
+    "block_steps": 17,
+    "compile_s": 4.185820838989457,
+    "ms_per_step_median": 1.102300506317988,
+    "ms_per_step_pipelined": 0.9804414705072035,
+    "points_per_s": 1044427.4653848155,
+    "s_per_epoch_est": 0.016667504998622462,
+    "steps_per_epoch": 17
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "train_jax",
+   "headline": "1.10 ms/step, 0.02 s/epoch (17 steps)",
+   "host_peak_rss_mb": 1647.6,
+   "info": {
+    "batch_size": 1024,
+    "final_loss": 0.5567629337310791,
+    "geometry": "quintic",
+    "model": "PhiFSModel",
+    "n_projective": 1,
+    "n_train": 18000,
+    "ncoords": 5,
+    "nfold": 3
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 224395264,
+    "peak_mb": 214.0
+   },
+   "name": "train_jax.quintic.bs1024",
+   "params": {
+    "batch_size": 1024,
+    "geometry": "quintic",
+    "n_points": 20000
+   },
+   "repeats_requested": 20,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 3797.350010272013,
+    "first_call_s": 4.185820838989457,
+    "max_s": 0.0015373409842140973,
+    "median_s": 0.001102300506317988,
+    "min_s": 0.0009291360038332641,
+    "p25_s": 0.0010478372641955502,
+    "p75_s": 0.001204794505611062,
+    "repeats": 20,
+    "samples_s": [
+     0.0015373409842140973,
+     0.0011637570278253406,
+     0.001210232003359124,
+     0.0010913609876297414,
+     0.001283118996070698,
+     0.0012260529911145568,
+     0.001053780986694619,
+     0.0009595440060365945,
+     0.0010508430132176727,
+     0.001202982006361708,
+     0.0011015970085281879,
+     0.0009291360038332641,
+     0.0010255769884679466,
+     0.0011030040041077882,
+     0.0010155269992537796,
+     0.0010388200171291828,
+     0.001125103997765109,
+     0.001213141018524766,
+     0.0011115979868918657,
+     0.001054680993547663
+    ]
+   },
+   "wall_s": 6.033647201984422,
+   "what": "PhiFSModel training step, quintic, medium batch"
+  },
+  {
+   "derived": {
+    "block_steps": 4,
+    "compile_s": 5.198247030988568,
+    "ms_per_step_median": 3.9700229972368106,
+    "ms_per_step_pipelined": 3.9234884970937856,
+    "points_per_s": 2548752.215638512,
+    "s_per_epoch_est": 0.0039234884970937856,
+    "steps_per_epoch": 1
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "train_jax",
+   "headline": "3.97 ms/step, 0.00 s/epoch (1 steps)",
+   "host_peak_rss_mb": 1675.7,
+   "info": {
+    "batch_size": 10000,
+    "final_loss": 0.5186023712158203,
+    "geometry": "quintic",
+    "model": "PhiFSModel",
+    "n_projective": 1,
+    "n_train": 18000,
+    "ncoords": 5,
+    "nfold": 3
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 576766720,
+    "peak_mb": 550.0
+   },
+   "name": "train_jax.quintic.bs10000",
+   "params": {
+    "batch_size": 10000,
+    "geometry": "quintic",
+    "n_points": 20000
+   },
+   "repeats_requested": 10,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 1309.3745387889737,
+    "first_call_s": 5.198247030988568,
+    "max_s": 0.004393174982396886,
+    "median_s": 0.003970022997236811,
+    "min_s": 0.003811970993410796,
+    "p25_s": 0.003894594745361246,
+    "p75_s": 0.003986714749771636,
+    "repeats": 10,
+    "samples_s": [
+     0.004393174982396886,
+     0.004002428991952911,
+     0.003976601001340896,
+     0.0038836819876451045,
+     0.0038758869923185557,
+     0.003927333018509671,
+     0.0039693620055913925,
+     0.003811970993410796,
+     0.003970683988882229,
+     0.003990085999248549
+    ]
+   },
+   "wall_s": 6.999627776996931,
+   "what": "PhiFSModel training step, quintic, phase-2 batch size"
+  },
+  {
+   "derived": {
+    "block_steps": 17,
+    "compile_s": 4.176454977015965,
+    "ms_per_step_median": 0.7823064952390268,
+    "ms_per_step_pipelined": 0.6329582932213431,
+    "points_per_s": 1617800.1156893147,
+    "s_per_epoch_est": 0.010760290984762833,
+    "steps_per_epoch": 17
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "train_jax",
+   "headline": "0.78 ms/step, 0.01 s/epoch (17 steps)",
+   "host_peak_rss_mb": 1916.1,
+   "info": {
+    "batch_size": 1024,
+    "final_loss": 0.56437087059021,
+    "geometry": "bicubic",
+    "model": "PhiFSModel",
+    "n_projective": 2,
+    "n_train": 18000,
+    "ncoords": 6,
+    "nfold": 3
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 226492416,
+    "peak_mb": 216.0
+   },
+   "name": "train_jax.bicubic.bs1024",
+   "params": {
+    "batch_size": 1024,
+    "geometry": "bicubic",
+    "n_points": 20000
+   },
+   "repeats_requested": 20,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 5338.642849615975,
+    "first_call_s": 4.176454977015965,
+    "max_s": 0.0013993890024721622,
+    "median_s": 0.0007823064952390268,
+    "min_s": 0.0006278919754549861,
+    "p25_s": 0.000645301493932493,
+    "p75_s": 0.0009265207481803373,
+    "repeats": 20,
+    "samples_s": [
+     0.0013993890024721622,
+     0.0008454440103378147,
+     0.0009606719831936061,
+     0.001067872013663873,
+     0.0009151370031759143,
+     0.0008528920006938279,
+     0.0008164859900716692,
+     0.0007481270004063845,
+     0.0006278919754549861,
+     0.000978532014414668,
+     0.0010724369785748422,
+     0.0008852460014168173,
+     0.0006975819997023791,
+     0.0006581119960173965,
+     0.000657255994156003,
+     0.0006475549889728427,
+     0.0006381059938576072,
+     0.000637714983895421,
+     0.000638541008811444,
+     0.0006336239748634398
+    ]
+   },
+   "wall_s": 6.711203504994046,
+   "what": "PhiFSModel training step, bicubic in P^2xP^2 (h11=2)"
+  },
+  {
+   "derived": {
+    "block_steps": 17,
+    "compile_s": 4.716523207986029,
+    "ms_per_step_median": 0.9837979887379333,
+    "ms_per_step_pipelined": 0.9663534703363171,
+    "points_per_s": 1059653.6685935636,
+    "s_per_epoch_est": 0.01642800899571739,
+    "steps_per_epoch": 17
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "train_jax",
+   "headline": "0.98 ms/step, 0.02 s/epoch (17 steps)",
+   "host_peak_rss_mb": 1770.9,
+   "info": {
+    "batch_size": 1024,
+    "final_loss": 0.5268124341964722,
+    "geometry": "tetraquadric",
+    "model": "PhiFSModel",
+    "n_projective": 4,
+    "n_train": 18000,
+    "ncoords": 8,
+    "nfold": 3
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 292815360,
+    "peak_mb": 279.3
+   },
+   "name": "train_jax.tetraquadric.bs1024",
+   "params": {
+    "batch_size": 1024,
+    "geometry": "tetraquadric",
+    "n_points": 20000
+   },
+   "repeats_requested": 20,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 4794.198872104453,
+    "first_call_s": 4.716523207986029,
+    "max_s": 0.0018034499953500926,
+    "median_s": 0.0009837979887379333,
+    "min_s": 0.0007638300012331456,
+    "p25_s": 0.0008352302538696676,
+    "p75_s": 0.001020405485178344,
+    "repeats": 20,
+    "samples_s": [
+     0.0018034499953500926,
+     0.0011416490015108138,
+     0.001004675985313952,
+     0.0009863469749689102,
+     0.0010580020025372505,
+     0.0008360630017705262,
+     0.0009812490025069565,
+     0.0010383049957454205,
+     0.0010144389816559851,
+     0.0010425809887237847,
+     0.0009917200077325106,
+     0.0009599390032235533,
+     0.001002957986202091,
+     0.0008186149934772402,
+     0.0007727060001343489,
+     0.0008327320101670921,
+     0.0007759799773339182,
+     0.0007638300012331456,
+     0.0009307439904659986,
+     0.0009699240035843104
+    ]
+   },
+   "wall_s": 6.949416348012164,
+   "what": "PhiFSModel training step, tetraquadric (h11=4): the h11 axis"
+  },
+  {
+   "derived": {
+    "epochs": 3,
+    "n_train": 18000,
+    "s_per_epoch_incl_compile_share": 1.7855125580002398,
+    "steps_per_epoch_phase1": 281
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "train_jax",
+   "headline": "1.79 s/epoch end-to-end (3 epochs/call)",
+   "host_peak_rss_mb": 2265.6,
+   "info": {
+    "batch_sizes": [
+     64,
+     10000
+    ],
+    "geometry": "quintic",
+    "model": "PhiFSModel",
+    "what_is_timed": "cymetric.jax.models.helper.train_model, both phases, incl. compilation"
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 588646400,
+    "peak_mb": 561.4
+   },
+   "name": "train_model_jax.quintic",
+   "params": {
+    "batch_sizes": [
+     64,
+     10000
+    ],
+    "epochs": 3,
+    "geometry": "quintic",
+    "n_points": 20000
+   },
+   "repeats_requested": 2,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 2.8812034180028094,
+    "first_call_s": 15.433274654991692,
+    "max_s": 5.416382160008652,
+    "median_s": 5.35653767400072,
+    "min_s": 5.296693187992787,
+    "p25_s": 5.326615430996753,
+    "p75_s": 5.386459917004686,
+    "repeats": 2,
+    "samples_s": [
+     5.416382160008652,
+     5.296693187992787
+    ]
+   },
+   "wall_s": 27.806881044991314,
+   "what": "end-to-end helper.train_model (both phases, incl. compile), quintic"
+  },
+  {
+   "derived": {
+    "epochs": 3,
+    "n_train": 18000,
+    "s_per_epoch_incl_compile_share": 2.0087175391672645,
+    "steps_per_epoch_phase1": 281
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "train_jax",
+   "headline": "2.01 s/epoch end-to-end (3 epochs/call)",
+   "host_peak_rss_mb": 2290.9,
+   "info": {
+    "batch_sizes": [
+     64,
+     10000
+    ],
+    "geometry": "tetraquadric",
+    "model": "PhiFSModel",
+    "what_is_timed": "cymetric.jax.models.helper.train_model, both phases, incl. compilation"
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 860358400,
+    "peak_mb": 820.5
+   },
+   "name": "train_model_jax.tetraquadric",
+   "params": {
+    "batch_sizes": [
+     64,
+     10000
+    ],
+    "epochs": 3,
+    "geometry": "tetraquadric",
+    "n_points": 20000
+   },
+   "repeats_requested": 2,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 2.788542767438033,
+    "first_call_s": 16.804184297012398,
+    "max_s": 6.037256234005326,
+    "median_s": 6.026152617501793,
+    "min_s": 6.0150490009982605,
+    "p25_s": 6.020600809250027,
+    "p75_s": 6.03170442575356,
+    "repeats": 2,
+    "samples_s": [
+     6.0150490009982605,
+     6.037256234005326
+    ]
+   },
+   "wall_s": 30.970472982007777,
+   "what": "end-to-end helper.train_model, tetraquadric (h11=4)"
+  },
+  {
+   "derived": {
+    "chunk": 5000,
+    "compile_s": 0.8998774880019482,
+    "n_points_evaluated": 15000,
+    "points_per_s": 10851220.414092798,
+    "us_per_point": 0.09215553291141987
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "detg_jax",
+   "headline": "1.09e+07 points/s",
+   "host_peak_rss_mb": 1473.8,
+   "info": {
+    "geometry": "quintic",
+    "model": "PhiFSModel",
+    "n_chunks": 3,
+    "n_projective": 1,
+    "ncoords": 5,
+    "points_available": 18000
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 192697088,
+    "peak_mb": 183.8
+   },
+   "name": "detg_jax.quintic.n20000",
+   "params": {
+    "chunk": 5000,
+    "geometry": "quintic",
+    "n_points": 20000
+   },
+   "repeats_requested": 7,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 650.9845978659525,
+    "first_call_s": 0.8998774880019482,
+    "max_s": 0.001821932994062081,
+    "median_s": 0.001382332993671298,
+    "min_s": 0.0007061809883452952,
+    "p25_s": 0.0007273980008903891,
+    "p75_s": 0.001494841490057297,
+    "repeats": 7,
+    "samples_s": [
+     0.001821932994062081,
+     0.001382332993671298,
+     0.0014403779932763427,
+     0.0015493049868382514,
+     0.000714463007170707,
+     0.0007403329946100712,
+     0.0007061809883452952
+    ]
+   },
+   "wall_s": 2.6533410050033126,
+   "what": "det g over a point set, quintic, chunks of 5000"
+  },
+  {
+   "derived": {
+    "chunk": 5000,
+    "compile_s": 0.9774669669859577,
+    "n_points_evaluated": 15000,
+    "points_per_s": 6150180.013703049,
+    "us_per_point": 0.16259686672128737
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "detg_jax",
+   "headline": "6.15e+06 points/s",
+   "host_peak_rss_mb": 1518.8,
+   "info": {
+    "geometry": "tetraquadric",
+    "model": "PhiFSModel",
+    "n_chunks": 3,
+    "n_projective": 4,
+    "ncoords": 8,
+    "points_available": 18000
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 277270784,
+    "peak_mb": 264.4
+   },
+   "name": "detg_jax.tetraquadric.n20000",
+   "params": {
+    "chunk": 5000,
+    "geometry": "tetraquadric",
+    "n_points": 20000
+   },
+   "repeats_requested": 7,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 400.77318696079834,
+    "first_call_s": 0.9774669669859577,
+    "max_s": 0.0028687619778793305,
+    "median_s": 0.0024389530008193105,
+    "min_s": 0.001450529001886025,
+    "p25_s": 0.001999312502448447,
+    "p75_s": 0.002505827505956404,
+    "repeats": 7,
+    "samples_s": [
+     0.0024389530008193105,
+     0.0028687619778793305,
+     0.0025114419986493886,
+     0.0019112760201096535,
+     0.0025002130132634193,
+     0.0020873489847872406,
+     0.001450529001886025
+    ]
+   },
+   "wall_s": 3.1545327980129514,
+   "what": "det g over a point set, tetraquadric (h11=4)"
+  },
+  {
+   "derived": {
+    "points_per_s_detg": 201206.4760565896,
+    "points_per_s_fs_metric": 223903.18675699792,
+    "sections_squared_sum": 25,
+    "us_per_point_fs_metric": 4.466216021683067
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "fsmetric_toric",
+   "headline": "223903 points/s FS metric, 201206 points/s det g",
+   "host_peak_rss_mb": 1002.4,
+   "info": {
+    "backend": "numpy",
+    "h11": 1,
+    "n_generators": 1,
+    "n_points": 500,
+    "ncoords": 5,
+    "sections_per_generator": [
+     5
+    ],
+    "what_is_timed": "fubini_study_metrics on the whole batch; timing_detg adds the pullback contraction and a 3x3 determinant"
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "fsmetric_toric_numpy.h11_1",
+   "params": {
+    "h11": 1,
+    "n_points": 500
+   },
+   "repeats_requested": 5,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 1.0329294369729038,
+    "first_call_s": 0.0023066430003382266,
+    "max_s": 0.002243350987555459,
+    "median_s": 0.0022331080108415335,
+    "min_s": 0.0022032129927538335,
+    "p25_s": 0.0022226790024433285,
+    "p75_s": 0.0022397360007744282,
+    "repeats": 5,
+    "samples_s": [
+     0.0022397360007744282,
+     0.002243350987555459,
+     0.0022226790024433285,
+     0.0022032129927538335,
+     0.0022331080108415335
+    ]
+   },
+   "timing_detg": {
+    "compile_over_steady": 1.0062963642526896,
+    "first_call_s": 0.002500656002666801,
+    "max_s": 0.002491103979991749,
+    "median_s": 0.0024850094778230414,
+    "min_s": 0.002478914975654334,
+    "p25_s": 0.0024819622267386876,
+    "p75_s": 0.002488056728907395,
+    "repeats": 2,
+    "samples_s": [
+     0.002478914975654334,
+     0.002491103979991749
+    ]
+   },
+   "wall_s": 6.27043483601301,
+   "what": "toric FS metric + det g in numpy, h11=1 (1 generator, 5 sections)"
+  },
+  {
+   "derived": {
+    "points_per_s_detg": 30633.1057231373,
+    "points_per_s_fs_metric": 31651.761761897127,
+    "sections_squared_sum": 51,
+    "us_per_point_fs_metric": 31.593817984685302
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "fsmetric_toric",
+   "headline": "31652 points/s FS metric, 30633 points/s det g",
+   "host_peak_rss_mb": 1002.4,
+   "info": {
+    "backend": "numpy",
+    "h11": 5,
+    "n_generators": 6,
+    "n_points": 500,
+    "ncoords": 9,
+    "sections_per_generator": [
+     4,
+     2,
+     2,
+     3,
+     3,
+     3
+    ],
+    "what_is_timed": "fubini_study_metrics on the whole batch; timing_detg adds the pullback contraction and a 3x3 determinant"
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "fsmetric_toric_numpy.h11_5",
+   "params": {
+    "h11": 5,
+    "n_points": 500
+   },
+   "repeats_requested": 5,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 1.0225248511517588,
+    "first_call_s": 0.01615273201605305,
+    "max_s": 0.015867371985223144,
+    "median_s": 0.01579690899234265,
+    "min_s": 0.01570861498476006,
+    "p25_s": 0.015746299002785236,
+    "p75_s": 0.01586005001445301,
+    "repeats": 5,
+    "samples_s": [
+     0.01579690899234265,
+     0.015867371985223144,
+     0.01570861498476006,
+     0.015746299002785236,
+     0.01586005001445301
+    ]
+   },
+   "timing_detg": {
+    "compile_over_steady": 1.0040804222682747,
+    "first_call_s": 0.016388812015065923,
+    "max_s": 0.016375706996768713,
+    "median_s": 0.016322210503858514,
+    "min_s": 0.016268714010948315,
+    "p25_s": 0.016295462257403415,
+    "p75_s": 0.016348958750313614,
+    "repeats": 2,
+    "samples_s": [
+     0.016375706996768713,
+     0.016268714010948315
+    ]
+   },
+   "wall_s": 4.237698095996166,
+   "what": "toric FS metric + det g in numpy, h11=5 (6 generators, 17 sections)"
+  },
+  {
+   "derived": {
+    "points_per_s_detg": 5050.573054538319,
+    "points_per_s_fs_metric": 5128.8495758401195,
+    "sections_squared_sum": 141,
+    "us_per_point_fs_metric": 194.97549795778468
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "fsmetric_toric",
+   "headline": "5129 points/s FS metric, 5051 points/s det g",
+   "host_peak_rss_mb": 1002.4,
+   "info": {
+    "backend": "numpy",
+    "h11": 10,
+    "n_generators": 12,
+    "n_points": 500,
+    "ncoords": 14,
+    "sections_per_generator": [
+     5,
+     2,
+     2,
+     3,
+     4,
+     5,
+     2,
+     3,
+     3,
+     4,
+     4,
+     2
+    ],
+    "what_is_timed": "fubini_study_metrics on the whole batch; timing_detg adds the pullback contraction and a 3x3 determinant"
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "fsmetric_toric_numpy.h11_10",
+   "params": {
+    "h11": 10,
+    "n_points": 500
+   },
+   "repeats_requested": 5,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 1.030264356751242,
+    "first_call_s": 0.10043815299286507,
+    "max_s": 0.09762384797795676,
+    "median_s": 0.09748774897889234,
+    "min_s": 0.09730043599847704,
+    "p25_s": 0.09733312699245289,
+    "p75_s": 0.09762235899688676,
+    "repeats": 5,
+    "samples_s": [
+     0.09733312699245289,
+     0.09730043599847704,
+     0.09762235899688676,
+     0.09748774897889234,
+     0.09762384797795676
+    ]
+   },
+   "timing_detg": {
+    "compile_over_steady": 1.009690867894398,
+    "first_call_s": 0.0999580500065349,
+    "max_s": 0.10009680199436843,
+    "median_s": 0.0989986670028884,
+    "min_s": 0.09790053201140836,
+    "p25_s": 0.09844959950714838,
+    "p75_s": 0.09954773449862842,
+    "repeats": 2,
+    "samples_s": [
+     0.10009680199436843,
+     0.09790053201140836
+    ]
+   },
+   "wall_s": 8.780494402017212,
+   "what": "toric FS metric + det g in numpy, h11=10 (12 generators, 39 sections)"
+  },
+  {
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": "JAX toric model PhiFSModelToric could not be constructed at h11=1: TypeError: Field 'patch_degrees' was not initialized.",
+   "error_type": "TypeError",
+   "group": "train_jax_toric",
+   "host_peak_rss_mb": 1002.4,
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 65280,
+    "peak_mb": 0.1
+   },
+   "name": "train_jax.toric.h11_1",
+   "params": {
+    "batch_size": 512,
+    "h11": 1,
+    "n_points": 512
+   },
+   "repeats_requested": 10,
+   "status": "blocked",
+   "wall_s": 1.4281594539934304,
+   "what": "JAX toric training step, h11=1 (known blocked: see case docstring)"
+  },
+  {
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": "JAX toric model PhiFSModelToric could not be constructed at h11=5: ValueError: shape mismatch: value array of shape (12,12) could not be broadcast to indexing result of shape (12,4)",
+   "error_type": "ValueError",
+   "group": "train_jax_toric",
+   "host_peak_rss_mb": 1002.4,
+   "memory": {
+    "bytes_in_use": 40960,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 79872,
+    "peak_mb": 0.1
+   },
+   "name": "train_jax.toric.h11_5",
+   "params": {
+    "batch_size": 512,
+    "h11": 5,
+    "n_points": 512
+   },
+   "repeats_requested": 10,
+   "status": "blocked",
+   "wall_s": 1.4034611090028193,
+   "what": "JAX toric training step, h11=5 (known blocked)"
+  },
+  {
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": "JAX toric model PhiFSModelToric could not be constructed at h11=10: ValueError: shape mismatch: value array of shape (12,12) could not be broadcast to indexing result of shape (12,2)",
+   "error_type": "ValueError",
+   "group": "train_jax_toric",
+   "host_peak_rss_mb": 1002.4,
+   "memory": {
+    "bytes_in_use": 69888,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 113152,
+    "peak_mb": 0.1
+   },
+   "name": "train_jax.toric.h11_10",
+   "params": {
+    "batch_size": 512,
+    "h11": 10,
+    "n_points": 512
+   },
+   "repeats_requested": 10,
+   "status": "blocked",
+   "wall_s": 1.3833411170053296,
+   "what": "JAX toric training step, h11=10 (known blocked)"
+  },
+  {
+   "derived": {
+    "ms_per_call_median": 989.9280539975734,
+    "points_per_s": 517.2093041836907
+   },
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": null,
+   "group": "metric_torch_toric",
+   "headline": "989.93 ms/batch det g (torch, cpu)",
+   "host_peak_rss_mb": 1708.2,
+   "info": {
+    "backend": "torch",
+    "batch_size": 512,
+    "compute_loss_error": "IndexError: The shape of the mask [10240, 5] at index 0 does not match the shape of the indexed tensor [2048, 5] at index 0",
+    "device": "cpu",
+    "device_errors": {
+     "cuda": "RuntimeError: indices should be either on cpu or on the same device as the indexed tensor (cpu)"
+    },
+    "h11": 1,
+    "ncoords": 5,
+    "what_is_timed": "det g on one batch, forward only"
+   },
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "metric_torch.toric.h11_1",
+   "params": {
+    "batch_size": 512,
+    "h11": 1,
+    "n_points": 512
+   },
+   "repeats_requested": 10,
+   "status": "ok",
+   "timing": {
+    "compile_over_steady": 1.0257039043356595,
+    "first_call_s": 1.0153730699967127,
+    "max_s": 1.0619399660208728,
+    "median_s": 0.9899280539975734,
+    "min_s": 0.10414558698539622,
+    "p25_s": 0.25589956074691145,
+    "p75_s": 1.0505808510060888,
+    "repeats": 10,
+    "samples_s": [
+     1.016486373002408,
+     1.052035953005543,
+     1.0462155450077262,
+     0.9633697349927388,
+     0.40376195797580294,
+     0.10414558698539622,
+     1.0619399660208728,
+     1.056301083008293,
+     0.18436008598655462,
+     0.20661209500394762
+    ]
+   },
+   "wall_s": 16.732077271008166,
+   "what": "torch toric det g, h11=1: the only runnable toric metric reference"
+  },
+  {
+   "device": {
+    "cuda_visible_devices": "0",
+    "jax_device_count": 1,
+    "jax_device_kind": "NVIDIA GeForce RTX 5090",
+    "jax_platform": "gpu",
+    "xla_python_client_preallocate": "false"
+   },
+   "error": "torch toric model unusable at h11=5 on cuda/cpu: cuda -> ValueError: shape mismatch: value array of shape (12,12) could not be broadcast to indexing result of shape (12,4); cpu -> ValueError: shape mismatch: value array of shape (12,12) could not be broadcast to indexing result of shape (12,4)",
+   "error_type": null,
+   "group": "metric_torch_toric",
+   "host_peak_rss_mb": 1112.7,
+   "memory": {
+    "bytes_in_use": 0,
+    "bytes_limit": 25253904384,
+    "peak_bytes_in_use": 0,
+    "peak_mb": 0.0
+   },
+   "name": "metric_torch.toric.h11_5",
+   "params": {
+    "batch_size": 512,
+    "h11": 5,
+    "n_points": 512
+   },
+   "repeats_requested": 10,
+   "status": "blocked",
+   "wall_s": 4.814137942012167,
+   "what": "torch toric det g, h11=5 (blocked: second defect, see docstring)"
+  }
+ ]
+}
