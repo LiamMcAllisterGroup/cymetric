@@ -168,12 +168,18 @@ def test_training_batches_are_the_same_after_the_device_shuffle(toric_name):
 
 
 def test_chunked_pullbacks_precompute_matches_one_program(toric_name):
-    """train_model precomputes the pullbacks in chunks; same tensor."""
+    """train_model precomputes the pullbacks in chunks; same tensor.
+
+    Not bit-exact on a GPU: chunking changes the reduction order, so float32
+    differs by about 5e-7 on entries of order 1. Equality held on the CPU,
+    which is why this was written as `== 0`.
+    """
     model, X, y = phi_model(toric_name)
     one = model.pullbacks(X)
     chunked = jnp.concatenate([model.pullbacks(X[i:i + 37])
                                for i in range(0, len(X), 37)])
-    assert float(jnp.max(jnp.abs(one - chunked))) == 0.
+    tol = 1e-12 if x64() else 1e-5
+    assert float(jnp.max(jnp.abs(one - chunked))) < tol * float(jnp.max(jnp.abs(one)))
 
 
 def test_toric_phi_training_step_runs(toric_name):

@@ -527,3 +527,37 @@ are synthetic stand-ins for section features (same width and same two
 derivatives, not the same arithmetic), and the timings are means of five
 calls after a warm-up, so they carry the usual few-percent jitter.  The
 agreement figures, not the timings, are what the tests enforce.
+
+## Addendum from independent verification (2026-10-20)
+
+The suite was reported as "98 pass in float32, 97 + 1 skip under x64". That is
+true on the CPU and under x64 on either device, but **the default GPU float32
+configuration was never run, and 44 tests fail there**:
+
+| configuration | result |
+|---|---|
+| CPU, float32 | 98 passed |
+| CPU, x64 | 97 passed, 1 skipped |
+| GPU, x64 | 97 passed, 1 skipped |
+| GPU, float32, default | **44 failed** |
+| GPU, float32, `JAX_DEFAULT_MATMUL_PRECISION=highest` | 98 passed |
+
+**The cause is TF32, not this port.** On NVIDIA GPUs JAX lowers float32 matmuls
+to TF32 by default, which carries about 10 mantissa bits, so the assembled
+metric is Hermitian only to roughly 1e-3 relative instead of 1e-6. Setting
+`JAX_DEFAULT_MATMUL_PRECISION=highest` (or
+`jax.config.update('jax_default_matmul_precision', 'highest')`) recovers
+everything. This is upstream behaviour and applies equally to the unmodified
+package; it is a property of the default precision, not of the changes here.
+
+It matters anyway, for two reasons: GPU float32 is the configuration users will
+actually train in, and a Hermiticity residual of 1e-3 is large enough to be
+worth a deliberate decision rather than an accident. Recommended: set the
+precision explicitly in the training entry points, or document it loudly.
+
+One test was genuinely too strict and has been fixed:
+`test_chunked_pullbacks_precompute_matches_one_program` asserted bit-exact
+equality between the chunked and unchunked pullback precompute. Chunking
+changes the reduction order, so on a GPU float32 differs by about 5e-7 on
+entries of order 1. It now compares against a precision-appropriate relative
+tolerance. Equality held on the CPU, which is why it was written as `== 0`.
