@@ -56,6 +56,23 @@ drive any optimisation work, and two of them are not where one would guess.
   step, plus per-step `eqx.tree_at` rebuilds and `float()` synchronisations.
   It is geometry-independent -- the tetraquadric epoch is 3% slower than the
   quintic's despite a step that costs twice as much.
+- **A faster GPU barely helps, which is the same finding from the hardware side.**
+  The identical sweep on an RTX 5090 against the RTX 5060 Ti:
+
+  | case | 5060 Ti | 5090 | gain |
+  |---|---|---|---|
+  | step, batch 64 | 0.79 ms | 0.91 ms | 0.87x |
+  | step, batch 1024 | 1.28 ms | 1.10 ms | 1.16x |
+  | step, batch 10000 | 15.41 ms | 3.97 ms | **3.88x** |
+  | step, tetraquadric batch 1024 | 2.60 ms | 0.98 ms | 2.64x |
+  | det g, quintic | 2.65 ms | 1.38 ms | 1.91x |
+  | `train_model`, quintic | 6.11 s | 5.36 s | **1.14x** |
+  | `train_model`, tetraquadric | 6.29 s | 6.03 s | **1.04x** |
+
+  A card roughly 4x faster on the arithmetic buys 4 to 14 per cent end to end,
+  and at batch 64 it is *slower*, which is pure kernel-launch latency. So the
+  available win is in the host loop, not in the device or in the kernels.
+
 - **Compilation dominates anything that retraces**: 4.2 s to compile a 0.79 ms
   step, a factor of 5200. `train_model` flips its `learn_*` flags between two
   phases every epoch; its first three-epoch call costs 17.5 s against 6.1 s
