@@ -111,9 +111,31 @@ def _make_train_step(optimizer):
 # Training loop
 # ---------------------------------------------------------------------------
 
+def _shuffled(X, y, pullbacks, sample_weights, n_train):
+    r"""One device-side shuffle of a phase's training data.
+
+    Draws the permutation with ``np.random.permutation`` exactly as the
+    per-batch gather did, applies it once, and lets the batch loop take
+    contiguous slices.
+
+    Args:
+        X, y, pullbacks (jnp.ndarray): Training arrays, first axis the points.
+        sample_weights (jnp.ndarray or None): Optional per-point weights.
+        n_train (int): Number of points.
+
+    Returns:
+        tuple: the four arrays in the shuffled order (the last is None if
+        ``sample_weights`` is None).
+    """
+    perm = jnp.asarray(np.random.permutation(n_train))
+    return (X[perm], y[perm], pullbacks[perm],
+            None if sample_weights is None else sample_weights[perm])
+
+
 def train_model(fsmodel, data, optimizer=None, epochs=50,
                 batch_sizes=(64, 10000), verbose=1,
-                custom_metrics=None, callbacks=None, sw=False):
+                custom_metrics=None, callbacks=None, sw=False,
+                pullback_chunk=4096):
     r"""Two-phase training loop for fixing the Kähler class.
 
     Equivalent to tensorflow/models/helper.py::train_model.
@@ -131,6 +153,8 @@ def train_model(fsmodel, data, optimizer=None, epochs=50,
         custom_metrics (list, optional): Metric objects (see metrics.py).
         callbacks (list, optional): Callback objects (see callbacks.py).
         sw (bool): If True, use integration weights as sample weights.
+        pullback_chunk (int): Points per program when the training set's
+            pullbacks are precomputed. Defaults to 4096.
 
     Returns:
         (model, training_history): updated model and loss history dict.
@@ -144,8 +168,13 @@ def train_model(fsmodel, data, optimizer=None, epochs=50,
     y_train = jnp.array(data['y_train'], dtype=real_dtype())
 
     # The pullbacks depend only on the points, not on the network weights, so
-    # compute them once here instead of in every forward pass.
-    train_pullbacks = fsmodel.pullbacks(X_train)
+    # compute them once here instead of in every forward pass.  In chunks:
+    # one program over the whole training set holds a
+    # (n_p, ncoords, n_terms, ncoords) intermediate of dQ/dz, which at a few
+    # hundred monomials and 100k points is tens of GB.
+    train_pullbacks = jnp.concatenate(
+        [fsmodel.pullbacks(X_train[i:i + pullback_chunk])
+         for i in range(0, len(X_train), pullback_chunk)])
 
     sample_weights = y_train[:, -2] if sw else None
 
@@ -194,16 +223,23 @@ def train_model(fsmodel, data, optimizer=None, epochs=50,
         batch_size1 = batch_sizes[0]
         epoch_loss1 = 0.
         num_batches1 = 0
-        indices = np.random.permutation(n_train)
+        # Shuffle once on the device and then take contiguous slices.  A
+        # numpy fancy-index gather per batch (the former
+        # X_train[indices[start:end]]) copies the indices to the device and
+        # launches a gather for each of X, y and the pullbacks: 1.6 ms on top
+        # of a 0.9 ms step at batch 64 on an RTX 5090, i.e. most of an epoch.
+        # The batches themselves are unchanged -- same permutation, same
+        # grouping -- so the trajectory is the same.
+        sx, sy, spb, ssw = _shuffled(
+            X_train, y_train, train_pullbacks, sample_weights, n_train)
 
         it1 = range(0, n_train, batch_size1)
         if HAS_TQDM and verbose > 0:
             it1 = tqdm.tqdm(it1)
         for start in it1:
             end = min(start + batch_size1, n_train)
-            idx = indices[start:end]
-            bx, by, bpb = X_train[idx], y_train[idx], train_pullbacks[idx]
-            bsw = sample_weights[idx] if sample_weights is not None else None
+            bx, by, bpb = sx[start:end], sy[start:end], spb[start:end]
+            bsw = ssw[start:end] if ssw is not None else None
             fsmodel, opt_state, loss_val, loss_components = train_step(
                 fsmodel, opt_state, bx, by, bsw, bpb)
             epoch_loss1 += loss_val
@@ -232,16 +268,16 @@ def train_model(fsmodel, data, optimizer=None, epochs=50,
         batch_size2 = min(batch_sizes[1], n_train)
         epoch_loss2 = 0.
         num_batches2 = 0
-        indices2 = np.random.permutation(n_train)
+        sx, sy, spb, ssw = _shuffled(
+            X_train, y_train, train_pullbacks, sample_weights, n_train)
 
         it2 = range(0, n_train, batch_size2)
         if HAS_TQDM and verbose > 0:
             it2 = tqdm.tqdm(it2)
         for start in it2:
             end = min(start + batch_size2, n_train)
-            idx = indices2[start:end]
-            bx, by, bpb = X_train[idx], y_train[idx], train_pullbacks[idx]
-            bsw = sample_weights[idx] if sample_weights is not None else None
+            bx, by, bpb = sx[start:end], sy[start:end], spb[start:end]
+            bsw = ssw[start:end] if ssw is not None else None
             fsmodel, opt_state, loss_val, loss_components = train_step(
                 fsmodel, opt_state, bx, by, bsw, bpb)
             epoch_loss2 += loss_val

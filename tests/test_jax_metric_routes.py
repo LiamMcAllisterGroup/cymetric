@@ -33,14 +33,18 @@ def test_metric_matches_the_full_hessian(any_name):
     """g from 2*nfold Hessian-vector products equals g from the full Hessian."""
     model, X, y = phi_model(any_name)
     X = X[:64]
-    assert _rel(model(X), model.metric_full_hessian(X)) < rtol()
+    assert _rel(model.metric_low_rank(X), model.metric_full_hessian(X)) < rtol()
+    # ... and __call__ takes one of them, whichever the route policy picked
+    chosen = (model.metric_full_hessian(X) if model.hessian_route == 'full'
+              else model.metric_low_rank(X))
+    assert _rel(model(X), chosen) == 0.
 
 
 def test_det_matches_the_full_hessian(any_name):
     """The determinant, which is what the Monge-Ampere loss sees."""
     model, X, y = phi_model(any_name)
     X = X[:64]
-    d_low = np.real(np.linalg.det(np.array(model(X))))
+    d_low = np.real(np.linalg.det(np.array(model.metric_low_rank(X))))
     d_full = np.real(np.linalg.det(np.array(model.metric_full_hessian(X))))
     assert np.max(np.abs(d_low - d_full) / np.abs(d_full)) < rtol()
 
@@ -52,7 +56,7 @@ def test_loss_gradients_match_the_full_hessian(any_name):
 
     def loss(nn, full):
         m = eqx.tree_at(lambda q: q.model, model, nn)
-        g = m.metric_full_hessian(X) if full else m(X)
+        g = m.metric_full_hessian(X) if full else m.metric_low_rank(X)
         return jnp.mean(m.sigma_loss(y, g))
 
     g_low = eqx.filter_grad(lambda nn: loss(nn, False))(model.model)
@@ -128,7 +132,8 @@ def test_chunk_heuristic_shrinks_with_the_feature_width():
     plain, _, _ = phi_model('h11_3')
     assert len(det_g_chunked(model, X[:8])) == 8
     # the same width decides how the Hessian-vector products are scheduled
-    assert model.map_tangents and not plain.map_tangents
+    assert model.hessian_route == 'map'
+    assert plain.hessian_route == 'full'      # 14 inputs, narrow input map
     # same budget, 500x the features: the chunk must come down
     budget = 3e8
     n_wide = int(budget // (2 * 3 * 4 * _n_features(model)))
@@ -137,6 +142,27 @@ def test_chunk_heuristic_shrinks_with_the_feature_width():
 
 # the toric section norms in log space
 # ====================================
+def test_route_policy_follows_the_input_count_and_width():
+    """choose_hessian_route: the full Hessian only where it is the cheaper one."""
+    from cymetric.jax.models.models import choose_hessian_route
+    from conftest import make_net
+    net = make_net(28, width=64)
+    assert choose_hessian_route(net, 14) == 'full'    # ncoords 7
+    assert choose_hessian_route(net, 28) == 'vmap'    # ncoords 14
+    wide = eqx.nn.Sequential([eqx.nn.Lambda(lambda x: jnp.concatenate([x] * 500)),
+                              *make_net(500 * 28, width=4).layers])
+    assert choose_hessian_route(wide, 14) == 'map'
+    assert choose_hessian_route(wide, 28) == 'map'
+    # what the models resolve it to, and a nonsense route is rejected
+    from cymetric.jax.models.models import PhiFSModelToric
+    small, _, _ = phi_model('h11_3')
+    big, _, _ = phi_model('h11_10')
+    assert small.hessian_route == 'full' and big.hessian_route == 'vmap'
+    basis, td, X, y = geometry('h11_3')
+    with pytest.raises(ValueError, match='hessian_route'):
+        PhiFSModelToric(small.model, basis, toric_data=td, hessian_route='quick')
+
+
 def _mss_products(model, cpoints, alpha):
     """The old, direct product form of |s_a|^2."""
     degrees = model.sections[alpha]
@@ -169,6 +195,33 @@ def _fs_n_metrics_products(model, cpoints, alpha, t):
     coeffs = (jnp.einsum('xa,xb,ai,aj->xij', mss, mss, degrees, degrees)
               - jnp.einsum('xa,xb,ai,bj->xij', mss, mss, degrees, degrees))
     return J * coeffs * t / jnp.array(np.pi, dtype=complex_dtype())
+
+
+def test_factorised_fs_contraction_matches_the_double_sum(toric_name):
+    """The toric FS metric's two contractions are rewritten in factored form.
+
+    ``sum_ab mss_a mss_b d_ai d_aj`` and ``sum_ab mss_a mss_b d_ai d_bj`` are
+    quadratic in the section count as written; they factorise into
+    ``kappa * sum_a mss_a d_ai d_aj`` and an outer product of
+    ``sum_a mss_a d_ai``.  Measured 1.4-1.9x on 200 points at 512-2048
+    synthetic sections (CPU), and it no longer depends on what contraction
+    path ``jnp.einsum`` picks.
+    """
+    model, X, y = phi_model(toric_name)
+    nc = model.ncoords
+    cp = (X[:64, :nc] + 1j * X[:64, nc:]).astype(complex_dtype())
+    for alpha in range(len(model.sections)):
+        degrees = model.sections[alpha]
+        mss, _ = model._section_norms(cp, alpha)
+        kappa = jnp.sum(mss, axis=-1)
+        zizj = cp[:, :, None] * jnp.conj(cp[:, None, :])
+        J_alphas = jnp.einsum('x,xab->xab', 1. / kappa ** 2, 1. / zizj)
+        double = (jnp.einsum('xa,xb,ai,aj->xij', mss, mss, degrees, degrees)
+                  - jnp.einsum('xa,xb,ai,bj->xij', mss, mss, degrees, degrees))
+        t = model.kmoduli[alpha]
+        ref = J_alphas * double * t / jnp.array(np.pi, dtype=complex_dtype())
+        got = model._fubini_study_n_metrics(cp, n=alpha, t=t)
+        assert _rel(got, ref) < rtol()
 
 
 def test_high_degree_sections_do_not_underflow():

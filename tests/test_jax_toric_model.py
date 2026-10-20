@@ -141,6 +141,41 @@ def test_toric_phi_transition_losses_run(toric_name):
     assert bool(jnp.all(jnp.isfinite(patches)))
 
 
+def test_training_batches_are_the_same_after_the_device_shuffle(toric_name):
+    """The shuffle moved to the device; the batches it hands out are the same.
+
+    `train_model` used to gather each batch out of the device arrays with a
+    numpy index array, which costs 1.6 ms on top of a 0.9 ms step at batch 64
+    (RTX 5090).  It now permutes once and slices, which is the same grouping
+    of the same permutation -- this pins that, and that the permutation is
+    still drawn from numpy's global RNG so a seeded run is reproducible.
+    """
+    from cymetric.jax.models.helper import _shuffled
+    model, X, y = phi_model(toric_name)
+    pb = model.pullbacks(X)
+    sw = y[:, -2]
+    np.random.seed(7)
+    perm = np.random.permutation(len(X))
+    np.random.seed(7)
+    sx, sy, spb, ssw = _shuffled(X, y, pb, sw, len(X))
+    for start in range(0, len(X), 23):
+        idx = perm[start:start + 23]
+        assert np.array_equal(np.array(sx[start:start + 23]), np.array(X[idx]))
+        assert np.array_equal(np.array(sy[start:start + 23]), np.array(y[idx]))
+        assert np.array_equal(np.array(spb[start:start + 23]), np.array(pb[idx]))
+        assert np.array_equal(np.array(ssw[start:start + 23]), np.array(sw[idx]))
+    assert _shuffled(X, y, pb, None, len(X))[3] is None
+
+
+def test_chunked_pullbacks_precompute_matches_one_program(toric_name):
+    """train_model precomputes the pullbacks in chunks; same tensor."""
+    model, X, y = phi_model(toric_name)
+    one = model.pullbacks(X)
+    chunked = jnp.concatenate([model.pullbacks(X[i:i + 37])
+                               for i in range(0, len(X), 37)])
+    assert float(jnp.max(jnp.abs(one - chunked))) == 0.
+
+
 def test_toric_phi_training_step_runs(toric_name):
     """One epoch of the standard training loop on a toric model."""
     import optax

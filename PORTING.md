@@ -74,6 +74,19 @@ instead of calling `self._generate_helpers()` the way the TF
 * `fixed_patches_n` (a JAX-only field, None for `nhyper == 1`) was also
   unassigned by the toric helper.
 
+The order inside the toric `_generate_helpers` matters and is deliberate:
+`nTransitions` is set from `_patch_transitions` **before**
+`_generate_all_patches` runs, and the override does not call `super()` --
+the same structure as TF's `ToricModel._generate_helpers`.  Delegating to the
+base helper first would build the toric patch table while `nTransitions`
+still held the projective value, which raises
+`ValueError: shape mismatch: value array of shape (12,12) could not be
+broadcast to indexing result of shape (12,4)` for any fan where a coordinate
+is free in more patches than that count -- the failure the torch backend
+shows at h11 = 5 and 10.  That is a false green waiting to happen, because it
+does not fire on a one-generator geometry, so the tests construct and
+evaluate models at h11 = 3, 5 and 10, not only at h11 = 1.
+
 Two further JAX-only defects surfaced immediately after construction worked,
 both in `ToricModel`, both of which made the toric patch-transition loss
 impossible to call rather than merely wrong:
@@ -140,9 +153,9 @@ O(ncoords x nPatches^2) with a `lstsq` per entry and allocates
 ## 2 and 3. ddbar phi without the full Hessian (and det g in chunks)
 
 `cymetric/jax/models/models.py`: `ddbar_phi_pullback` (new),
-`ddbar_phi_pullback_full` (the old expression, kept as the reference),
-`PhiFSModel.__call__`, `PhiFSModelToric.__call__`, and
-`metric_full_hessian` on both.
+`ddbar_phi_pullback_full` (the old expression), `phi_metric`,
+`choose_hessian_route`, and `metric_low_rank` / `metric_full_hessian` on both
+phi models.
 
 `g = g_FS + J (ddbar phi) J^H` contracts the Hessian of the network with the
 `nfold` rows of the pullback on each side, so the `(2 ncoords)^2` Hessian
@@ -156,10 +169,28 @@ which is the donor's `cy_laplacian_lowrank` / `train._g_pred` identity
 (donor row 2), kept in matrix rather than trace form because the metric needs
 all nine entries, not just `tr(Omega Hess f)`.  It is geometry-agnostic: the
 shapes carry `nfold` and `ncoords`, and the same function serves the CICY and
-the toric models.  The six products run in a `lax.map` rather than a `vmap`
+the toric models.  The products can run in a `lax.map` rather than a `vmap`
 (`sequential=True`), because each one carries the intermediates of phi's
 input map, which for the toric nets of the McAllister scan are all pairwise
-section products (donor row 35).
+section products (donor row 35); that is the `'map'` route below.
+
+Which route `__call__` takes is a measured choice, not an unconditional
+switch (`choose_hessian_route`, resolved once at construction into the
+`hessian_route` field, overridable with the `hessian_route=` argument):
+
+* `'map'` -- the low-rank route, products one at a time -- whenever the
+  network's input map is wider than 4096 values.  That is every toric net of
+  the McAllister kind, and the case where the full Hessian needs tens of GB.
+* `'full'` -- the old route -- when the point has at most 16 real inputs
+  (ncoords <= 8) and the input map is narrow.  There the full Hessian is both
+  small and faster: it needs `2 ncoords` directions against `2 nfold`, but
+  gets all of them from one batched reverse pass, while the low-rank route
+  pays a separate forward-over-reverse pass per direction.  Measured
+  crossover on an RTX 5090: at `2 ncoords = 14` the full Hessian is 1.0-1.4x
+  ahead, at 28 the low-rank route is 1.3-2.2x ahead.  This keeps the quintic
+  and the CICY models exactly as fast as they were.
+* `'vmap'` -- the low-rank route with the products batched -- otherwise,
+  which is every toric geometry from about h11 = 5 up with a plain MLP.
 
 `det g` on a validation set is additionally chunked:
 `measures.det_g_chunked`, with `sigma_measure` routed through it and a `chunk`
@@ -169,7 +200,7 @@ between 128 and 4096 points -- the donor's `train.metric_det` / `_det_chunk`
 (donor rows 33, 35).
 
 Verification before trusting any of it (`tests/test_jax_metric_routes.py`,
-all five fixtures): the metric, its determinant and the gradient of the
+all six fixtures): the metric, its determinant and the gradient of the
 Monge-Ampere loss with respect to the network parameters all agree between
 the two routes to 2.4e-7 in float32 and 5e-16 under x64; `sequential=True`
 and `False` agree; the reference route is pinned to the pre-change
@@ -178,7 +209,7 @@ one-shot determinant at chunk sizes 7, 64 and the default.  The gradient test
 is the one that matters for training, and it is checked separately from the
 value because a wrong tangent structure can still give the right value.
 
-Measured (RTX 5090, batch 128, `h11_3`): see the table at the end.
+Measured (RTX 5090, batch 128): see the tables at the end.
 
 ## 4. A float32 underflow that made det g nan
 
@@ -241,6 +272,61 @@ constant across a scan, and `train_model` already flips the flags through
 `losses.sigma_loss` (the closure factory) is unchanged and still exported, and
 `test_kappa_is_an_array_and_still_reaches_the_loss` pins the model's loss to
 it numerically, in both the matrix and the flat branch.
+
+## 6. The epoch's host side, which is most of an epoch
+
+`cymetric/jax/models/helper.py`: `_shuffled` (new), `train_model`.
+
+Measured on an RTX 5090, quintic, 20 000 points, batch 64 (the benchmarking
+agent found the same thing on a 5060 Ti and it is the larger end-to-end win):
+
+| per step | ms |
+|---|---|
+| `train_step` on a batch already on the device | 0.901 |
+| plus the per-batch numpy fancy-index gather `train_model` did | 2.516 |
+| plus one device-side shuffle per phase, then contiguous slices | 0.948 |
+
+The gather copied a numpy index array to the device and launched a gather for
+each of X, y and the pullbacks, 313 times an epoch, which was 64% of the step
+time.  `train_model` now permutes once per phase (same
+`np.random.permutation` draw, so a seeded run is reproducible and the batches
+are the same points in the same groups) and slices.  That is 2.7x off the
+step at batch 64, and the smaller the batch the larger the share.
+
+The same function also precomputes the training set's pullbacks in chunks
+(`pullback_chunk=4096`): one program over the whole set holds a
+`(n_p, ncoords, n_terms, ncoords)` intermediate of dQ/dz, which at a few
+hundred hypersurface monomials and 100k points is tens of GB.
+
+Tests: `test_training_batches_are_the_same_after_the_device_shuffle` (the
+batches are element-for-element what the gather produced, for the same seed)
+and `test_chunked_pullbacks_precompute_matches_one_program` (exactly equal).
+
+What is left on the host side, and not done here: a warm epoch of 313 steps
+still costs more than 313 steps, because `eqx.filter_jit` re-partitions the
+model pytree on every call and the optimizer state is rebuilt per step.  The
+donor's answer is one `lax.scan` per epoch over device-resident data (donor
+row 1, 767 -> 175 s there).  That restructures the loop, the callbacks and
+the metrics, so it is the recommended next step rather than part of this
+branch.
+
+## 7. The toric Fubini-Study contraction
+
+`ToricModel._fubini_study_n_metrics`.  Both contractions of the section norms
+factorise:
+
+    sum_ab mss_a mss_b d_ai d_aj = kappa_alpha * sum_a mss_a d_ai d_aj
+    sum_ab mss_a mss_b d_ai d_bj = (sum_a mss_a d_ai) (sum_b mss_b d_bj)
+
+which is `O(n_sections ncoords^2)` instead of `O(n_sections^2 ncoords^2)` --
+1e9 flops per point for the 1574-section generator of the h11 = 16 fan.  The
+benchmarking agent measured 15.5 ms -> 0.3 ms from `optimize=True` on the
+numpy side of the same expression.  On the JAX side `jnp.einsum` already
+optimizes the path, so the win is smaller but real: 1.4-1.9x at 512-2048
+synthetic sections on 200 points (CPU), and the code no longer depends on
+what path the einsum optimizer picks.  Test:
+`test_factorised_fs_contraction_matches_the_double_sum`, against the literal
+double sum on every toric fixture (9e-8 float32, 5e-16 x64).
 
 ## Rejected, or deliberately not done
 
@@ -305,16 +391,29 @@ needed 36-61 GB.
 Agreement in the same runs: 2.0e-5 to 2.9e-5 relative (float32, `max|dg| /
 mean|g|`), 5e-16 under x64.
 
-So at the smallest possible geometry the low-rank route is **not** a time
-win: ncoords = 7 means 14 input directions against 6 tangents, and upstream's
-`jacobian(grad(phi))` gets all 14 rows out of one batched reverse pass, while
-this route pays six separate forward-over-reverse passes.  What it does buy
-there is memory, by the factor the Hessian itself costs: 0.21 GB against 0.78
-GB at a 90k-wide input map, and 3.7x less again than the 29 MB per point that
-the h11 = 16 map of the donor's scan needs.  The time win needs ncoords to be
-larger than this fixture's seven; see the `h11_10` row below.
+So at the smallest geometry in the set the low-rank route is **not** a time
+win -- 14 input directions against 6 tangents, and the full Hessian gets all
+14 from one batched reverse pass -- which is why `choose_hessian_route` keeps
+the full Hessian there.  What the low-rank route buys even at ncoords = 7 is
+memory: 0.21 GB against 0.78 GB at a 90k-wide input map, which is why the
+policy switches to it as soon as the input map is wide, whatever ncoords is.
 
-PLACEHOLDER_H11_10
+### g on 128 points, `h11_10` (ncoords 14, so 28 real inputs against 6 tangents)
+
+| input map | n_in | ddbar phi, vmap | ddbar phi, lax.map | full g, low-rank | full g, full Hessian | speedup | peak GB low-rank | peak GB full |
+|---|---|---|---|---|---|---|---|---|
+| MLP(2 ncoords) | 28 | 0.4 ms | 0.3 ms | 0.4 ms | 0.6 ms | 1.33 | 0.001 | 0.001 |
+| pairwise(48) | 2 304 | 0.5 ms | 0.3 ms | 0.6 ms | 0.6 ms | 0.99 | 0.012 | 0.041 |
+| pairwise(140) | 19 600 | 1.1 ms | 0.9 ms | 1.3 ms | 1.8 ms | 1.36 | 0.077 | 0.326 |
+| pairwise(300) | 90 000 | 2.2 ms | 2.6 ms | 2.7 ms | 5.8 ms | 2.17 | 0.212 | 1.333 |
+
+Loss + gradient of the whole batch, which is what a training step costs:
+1.34x at 28 inputs with an MLP, 1.48x at a 19.6k-wide input map.  Agreement
+3.3e-6 to 3.8e-6 relative in float32.  `det g` on 20 000 points: 0.075 s
+chunked against 0.068 s in one program, the latter peaking at 3.05 GB.
+
+Both tables are the two routes called explicitly (`metric_low_rank` and
+`metric_full_hessian`); what `__call__` picks is the policy above.
 
 ### det g on 20 000 points
 

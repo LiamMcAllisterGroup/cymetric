@@ -82,6 +82,65 @@ def _real_tangents(J):
 # small and six kernel launches cost more than the memory saves.
 TANGENT_MAP_THRESHOLD = 4096
 
+# Below this many real inputs per point (2*ncoords), and only when the
+# network's input map is narrow, the full Hessian of phi is the cheaper route
+# after all: it costs 2*ncoords directions against 2*nfold, but gets all of
+# them from one batched reverse pass, while the low-rank route pays a
+# separate forward-over-reverse pass per direction.  Measured on an RTX 5090
+# (PORTING.md): at 2*ncoords = 14 the full Hessian is 1.0-1.4x ahead, at 28
+# the low-rank route is 1.3-2.2x ahead, so the crossover is in between.  The
+# full Hessian is only ever chosen where it is also small: (2*ncoords)^2 per
+# point with a narrow input map.
+FULL_HESSIAN_MAX_INPUTS = 16
+
+
+def choose_hessian_route(nn_model, n_in):
+    r"""Which route ``PhiFSModel.__call__`` should take for this backbone.
+
+    Args:
+        nn_model (eqx.Module): The network backbone.
+        n_in (int): Number of real inputs per point (``2 * ncoords``).
+
+    Returns:
+        str: 'full' (the full Hessian of phi), 'vmap' (the 2*nfold
+        Hessian-vector products, all at once) or 'map' (the same products one
+        at a time; see :func:`ddbar_phi_pullback`).
+    """
+    width = input_map_width(nn_model, n_in)
+    if width is not None and width > TANGENT_MAP_THRESHOLD:
+        return 'map'
+    if n_in <= FULL_HESSIAN_MAX_INPUTS:
+        return 'full'
+    return 'vmap'
+
+
+def phi_metric(model, input_tensor, j_elim=None, pb=None, route=None):
+    r"""``g = g_FS + J (ddbar phi) J^H`` by the named route.
+
+    Shared by :class:`PhiFSModel` and :class:`PhiFSModelToric`, which differ
+    only in their ``pullbacks`` and ``fubini_study_pb``.
+
+    Args:
+        model (PhiFSModel or PhiFSModelToric): The model.
+        input_tensor (jnp.ndarray, [bSize, 2*ncoords], real): Points.
+        j_elim: Coordinates to eliminate, passed through.
+        pb (jnp.ndarray, optional): Precomputed pullbacks.
+        route (str, optional): 'full', 'vmap' or 'map'.  None uses
+            ``model.hessian_route``. Defaults to None.
+
+    Returns:
+        jnp.ndarray, [bSize, nfold, nfold], complex.
+    """
+    route = model.hessian_route if route is None else route
+    pbs = model.pullbacks(input_tensor, j_elim=j_elim) if pb is None else pb
+    if route == 'full':
+        dd_phi_pb = ddbar_phi_pullback_full(model._phi, input_tensor, pbs)
+    else:
+        dd_phi_pb = ddbar_phi_pullback(model._phi, input_tensor, pbs,
+                                       sequential=(route == 'map'))
+    fs_cont = model.fubini_study_pb(input_tensor, pb=pbs, j_elim=j_elim)
+    return fs_cont + dd_phi_pb
+
 
 def input_map_width(nn_model, n_in):
     r"""Number of values the backbone's first layer makes of one point.
@@ -219,27 +278,31 @@ class FreeModel(FSModel):
     kappa: jnp.ndarray
     gclipping: float
     custom_metrics: list   # [metric objects]
-    map_tangents: bool     # see TANGENT_MAP_THRESHOLD
+    hessian_route: str     # see choose_hessian_route
 
-    def __init__(self, nn_model, BASIS, alpha=None, map_tangents=None, **kwargs):
+    def __init__(self, nn_model, BASIS, alpha=None, hessian_route=None,
+                 **kwargs):
         r"""
         Args:
             nn_model (eqx.Module): NN mapping (bSize, 2*ncoords) → (bSize, nfold²).
             BASIS (dict): Geometry dictionary from PointGenerator.
             alpha (list of float, optional): Loss weights. Defaults to all 1.
-            map_tangents (bool, optional): Whether the 2*nfold
-                Hessian-vector products of ``ddbar phi`` are scheduled one at
-                a time (see :func:`ddbar_phi_pullback`).  None decides from
-                the width of the network's input map, which is what the
-                memory peak is proportional to. Defaults to None.
+            hessian_route (str, optional): How the phi models compute
+                ``ddbar phi``: 'full', 'vmap' or 'map' (see
+                :func:`phi_metric`).  None asks
+                :func:`choose_hessian_route`, which decides from the number
+                of inputs and the width of the network's input map.
+                Defaults to None.
         """
         super(FreeModel, self).__init__(BASIS=BASIS, **kwargs)
         self.model = nn_model
-        if map_tangents is None:
-            width = input_map_width(nn_model, 2 * self.ncoords)
-            map_tangents = bool(width is not None
-                                and width > TANGENT_MAP_THRESHOLD)
-        self.map_tangents = bool(map_tangents)
+        if hessian_route is None:
+            hessian_route = choose_hessian_route(nn_model, 2 * self.ncoords)
+        if hessian_route not in ('full', 'vmap', 'map'):
+            raise ValueError(
+                "hessian_route must be 'full', 'vmap' or 'map', got "
+                + repr(hessian_route))
+        self.hessian_route = hessian_route
         self.NLOSS = 5
 
         if alpha is not None:
@@ -516,28 +579,37 @@ class PhiFSModel(FreeModel):
     def __call__(self, input_tensor, training=True, j_elim=None, pb=None):
         r"""g_out_ij = g_FS_ij + partial_i bar_partial_j phi_NN.
 
-        Equivalent to PhiFSModel.call in TF, but the pulled back
-        ``del delbar phi`` comes from :func:`ddbar_phi_pullback` (2*nfold
-        Hessian-vector products) rather than from the full Hessian of phi.
+        Equivalent to PhiFSModel.call in TF.  The pulled back
+        ``del delbar phi`` is taken by ``self.hessian_route``; see
+        :func:`phi_metric` and :func:`choose_hessian_route`.
         """
-        pbs = self.pullbacks(input_tensor, j_elim=j_elim) if pb is None else pb
-        dd_phi_pb = ddbar_phi_pullback(self._phi, input_tensor, pbs,
-                                       sequential=self.map_tangents)
-        fs_cont = self.fubini_study_pb(input_tensor, pb=pbs, j_elim=j_elim)
-        return fs_cont + dd_phi_pb
+        return phi_metric(self, input_tensor, j_elim=j_elim, pb=pb)
+
+    def metric_low_rank(self, input_tensor, training=True, j_elim=None,
+                        pb=None, sequential=None):
+        r"""``__call__`` through the 2*nfold Hessian-vector products.
+
+        Args:
+            sequential (bool, optional): Schedule the products one at a time.
+                None follows ``self.hessian_route``. Defaults to None.
+        """
+        if sequential is None:
+            sequential = self.hessian_route == 'map'
+        return phi_metric(self, input_tensor, j_elim=j_elim, pb=pb,
+                          route='map' if sequential else 'vmap')
 
     def metric_full_hessian(self, input_tensor, training=True, j_elim=None,
                             pb=None):
-        r"""``__call__`` through the full Hessian of phi (reference route).
+        r"""``__call__`` through the full Hessian of phi.
 
-        Only the agreement tests of :func:`ddbar_phi_pullback` need this; it
-        costs ``2*ncoords`` Hessian-vector products per point instead of
-        ``2*nfold`` and holds the whole Hessian in memory.
+        The reference route for the agreement tests of
+        :func:`ddbar_phi_pullback`, and what ``__call__`` uses on small
+        geometries with a narrow input map (:func:`choose_hessian_route`).
+        It costs ``2*ncoords`` directions per point instead of ``2*nfold``
+        and holds the whole Hessian in memory.
         """
-        pbs = self.pullbacks(input_tensor, j_elim=j_elim) if pb is None else pb
-        dd_phi_pb = ddbar_phi_pullback_full(self._phi, input_tensor, pbs)
-        fs_cont = self.fubini_study_pb(input_tensor, pb=pbs, j_elim=j_elim)
-        return fs_cont + dd_phi_pb
+        return phi_metric(self, input_tensor, j_elim=j_elim, pb=pb,
+                          route='full')
 
     def compute_transition_loss(self, points):
         r"""Transition loss for Phi model: phi(lambda^q z) == phi(z).
@@ -733,8 +805,17 @@ class ToricModel(FreeModel):
         J_alphas = 1. / zizj
         J_alphas = jnp.einsum('x,xab->xab',
                               1. / kappa_alphas ** 2, J_alphas)
-        coeffs = (jnp.einsum('xa,xb,ai,aj->xij', mss, mss, degrees, degrees)
-                  - jnp.einsum('xa,xb,ai,bj->xij', mss, mss, degrees, degrees))
+        # Both contractions factorise, which matters once a generator has
+        # many sections: as written they are O(n_sections^2 ncoords^2) per
+        # point (1e9 flops for the 1574-section generator of the h11 = 16 fan
+        # of the McAllister scan), and
+        #   sum_ab mss_a mss_b d_ai d_aj = kappa * sum_a mss_a d_ai d_aj
+        #   sum_ab mss_a mss_b d_ai d_bj = (sum_a mss_a d_ai)(sum_b mss_b d_bj)
+        # is O(n_sections ncoords^2).
+        md = jnp.einsum('xa,ai->xi', mss, degrees)                    # (bSize, nc)
+        mdd = jnp.einsum('xa,ai,aj->xij', mss, degrees, degrees)      # (bSize, nc, nc)
+        coeffs = (kappa_alphas[:, None, None] * mdd
+                  - md[:, :, None] * md[:, None, :])
         return J_alphas * coeffs * t / jnp.array(np.pi, dtype=complex_dtype())
 
     def _patch_transitions(self):
@@ -934,26 +1015,17 @@ class PhiFSModelToric(ToricModel):
     def __call__(self, input_tensor, training=True, j_elim=None, pb=None):
         r"""g_out_ij = g_FS'_ij + partial_i bar_partial_j phi_NN.
 
-        Equivalent to PhiFSModelToric.call in TF, with the pulled back
-        ``del delbar phi`` from :func:`ddbar_phi_pullback` (2*nfold
-        Hessian-vector products).  The full Hessian of phi is what made this
+        Equivalent to PhiFSModelToric.call in TF, with ``ddbar phi`` taken by
+        ``self.hessian_route``.  The full Hessian of phi is what made this
         model need tens of GB at large h11: the toric nets of the McAllister
         scan take all pairwise section products as inputs, so one Hessian is
-        quadratic in a feature count that reaches 87k.
+        quadratic in a feature count that reaches 87k, which is why
+        :func:`choose_hessian_route` never picks it for them.
         """
-        pbs = self.pullbacks(input_tensor, j_elim=j_elim) if pb is None else pb
-        dd_phi_pb = ddbar_phi_pullback(self._phi, input_tensor, pbs,
-                                       sequential=self.map_tangents)
-        fs_cont = self.fubini_study_pb(input_tensor, pb=pbs, j_elim=j_elim)
-        return fs_cont + dd_phi_pb
+        return phi_metric(self, input_tensor, j_elim=j_elim, pb=pb)
 
-    def metric_full_hessian(self, input_tensor, training=True, j_elim=None,
-                            pb=None):
-        r"""``__call__`` through the full Hessian of phi (reference route)."""
-        pbs = self.pullbacks(input_tensor, j_elim=j_elim) if pb is None else pb
-        dd_phi_pb = ddbar_phi_pullback_full(self._phi, input_tensor, pbs)
-        fs_cont = self.fubini_study_pb(input_tensor, pb=pbs, j_elim=j_elim)
-        return fs_cont + dd_phi_pb
+    metric_low_rank = PhiFSModel.metric_low_rank
+    metric_full_hessian = PhiFSModel.metric_full_hessian
 
     def compute_transition_loss(self, points, num_random_scalings=10):
         r"""Toric Phi transition loss: phi(lambda^q z) == phi(z).
